@@ -1,0 +1,34 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: sqlite:///./reviewer.db
+      SANDBOX_CODE_URL: http://sandbox-code:8001/run_code
+      SANDBOX_SQL_URL: http://sandbox-sql:8002/run_sql
+      LM_STUDIO_URL: http://host.docker.internal:1234/v1/chat/completions
+      LM_MODEL: openai/gpt-oss-20b
+      ALLOW_ORIGINS: "*"
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/reviewer.db:/app/reviewer.db
+    depends_on:
+      - sandbox-code
+      - sandbox-sql
+
+  sandbox-code:
+    build:
+      context: ./sandbox-code
+      dockerfile: Dockerfile
+    ports:
+      - "8001:8001"
+
+  sandbox-sql:
+    build:
+      context: ./sandbox-sql
+      dockerfile: Dockerfile
+    ports:
+      - "8002:8002"
