@@ -9,8 +9,9 @@ from ...services.rag import search_documents
 from .codegen import (
     _apply_default_init_args,
     _build_sanity_checks_with_llm,
-    _build_test_cases_with_llm,
+    _build_test_cases_from_task,
     _filter_cases,
+    _resolve_entrypoint,
 )
 from .harness import _compose_harness_code
 from .state import _get_task_by_id
@@ -35,10 +36,10 @@ def _apply_score(session: models.Session, args: dict[str, Any], db: Session) -> 
 def _dispatch_tool_call(session, tool_call, db):
     fn = tool_call.get("function") or {}
     name = fn.get("name") or ""
-    name = (name or "").strip().replace("вЂ¦", "")
+    name = (name or "").strip().replace("…", "")
 
     raw_args = fn.get("arguments")
-    # 1) Р±РµР·РѕРїР°СЃРЅРѕ СЂР°СЃРїР°СЂСЃРёС‚СЊ arguments -> dict
+    # 1) безопасно распарсить arguments -> dict
     try:
         args = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
     except Exception:
@@ -59,7 +60,7 @@ def _dispatch_tool_call(session, tool_call, db):
             name = real_name
         args = real_args if isinstance(real_args, dict) else {}
 
-    # Р’РЎР•Р“Р”Рђ РїСЂРѕСЃС‚Р°РІР»СЏРµРј task_id РїРѕСЃР»Рµ unwrap
+    # ВСЕГДА проставляем task_id после unwrap
     if "task_id" not in args and session.current_task_id:
         args["task_id"] = session.current_task_id
 
@@ -79,14 +80,14 @@ def _dispatch_tool_call(session, tool_call, db):
         code = args.get("code") or ""
         task_id = args.get("task_id") or session.current_task_id
 
-        # РµСЃР»Рё tests_id РЅРµ РїРµСЂРµРґР°РЅ вЂ” РїРѕРїС‹С‚РєР° РІР·СЏС‚СЊ РёР· task
+        # если tests_id не передан — попытка взять из task
         tests_id = args.get("tests_id")
         if not tests_id and task_id:
             task = _get_task_by_id(session.scenario, task_id)
             if task:
-                tests_id = task.get("tests_id") or task.get("tests")  # РЅР° СЃР»СѓС‡Р°Р№ РґСЂСѓРіРѕРіРѕ РєР»СЋС‡Р°
+                tests_id = task.get("tests_id") or task.get("tests")  # на случай другого ключа
 
-        # sandbox.run_code РѕР¶РёРґР°РµС‚ tests_id СЃС‚СЂРѕРєРѕР№ вЂ” РїРµСЂРµРґР°С‡Р° РїСѓСЃС‚РѕР№, РµСЃР»Рё РЅРµС‚
+        # sandbox.run_code ожидает tests_id строкой — передача пустой, если нет
         result = sandbox.run_code(language=language, code=code, tests_id=str(tests_id or ""))
         result["task_id"] = task_id
         result["language"] = language
@@ -125,16 +126,16 @@ def _dispatch_tool_call(session, tool_call, db):
             return {"error": "Task not found"}
 
         n = int(args.get("n") or 10)
-        out = _build_test_cases_with_llm(task, n)
+        out = _build_test_cases_from_task(task, n)
 
-        # 1) С„РёР»СЊС‚СЂСѓРµРј РЅРµРІР°Р»РёРґРЅС‹Рµ РєРµР№СЃС‹
+        # 1) фильтруем невалидные кейсы
         cases = _filter_cases(task, out.get("cases") or [])
 
-        # 2) РїРѕРґСЃС‚Р°РІР»СЏРµРј РґРµС„РѕР»С‚РЅС‹Рµ init.args, РµСЃР»Рё LLM Р·Р°Р±С‹Р» РёС… СѓРєР°Р·Р°С‚СЊ
+        # 2) подставляем дефолтные init.args, если в кейсе нет args
         cases = _apply_default_init_args(task, cases)
 
         if not cases:
-            return {"error": "generate_test_cases: produced 0 valid cases after filtering"}
+            return {"error": "generate_test_cases: no valid success_cases found in task definition"}
         out["cases"] = cases
         out["task_id"] = task_id
         out["n"] = n
@@ -162,7 +163,7 @@ def _dispatch_tool_call(session, tool_call, db):
             return {"error": "Task not found"}
 
         cases = _apply_default_init_args(task, cases)
-        entrypoint = (task.get("interface") or {}).get("entrypoint") or (task.get("interface") or {}).get("class_name") or "TaskQueue"
+        entrypoint = _resolve_entrypoint(task)
 
         harness = _compose_harness_code(
             candidate_code=candidate_code,

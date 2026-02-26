@@ -50,6 +50,20 @@ def _load_sanity(ns: dict):
     return fn
 
 def _run_cases(ns: dict, cases: list[dict]):
+    def _normalize(value):
+        if hasattr(value, "tolist"):
+            try:
+                return value.tolist()
+            except Exception:
+                pass
+        if isinstance(value, tuple):
+            return [_normalize(v) for v in value]
+        if isinstance(value, list):
+            return [_normalize(v) for v in value]
+        if isinstance(value, dict):
+            return {{k: _normalize(v) for k, v in value.items()}}
+        return value
+
     res = {{"passed": 0, "failed": 0, "failures": []}}
     cls = ns.get(ENTRYPOINT)
     if not callable(cls):
@@ -78,8 +92,11 @@ def _run_cases(ns: dict, cases: list[dict]):
 
                 got = fn(*s_args, **s_kwargs)
 
-                if has_expect and got != expect:
-                    raise AssertionError(f"Expected {{expect!r}}, got {{got!r}} for {{call}}")
+                if has_expect:
+                    got_norm = _normalize(got)
+                    expect_norm = _normalize(expect)
+                    if got_norm != expect_norm:
+                        raise AssertionError(f"Expected {{expect_norm!r}}, got {{got_norm!r}} for {{call}}")
 
             res["passed"] += 1
 

@@ -1,6 +1,7 @@
+from copy import deepcopy
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -43,11 +44,92 @@ else:
         return {"message": "Frontend build not found. Run `npm run build` in frontend/."}
 
 
+DEFAULT_SUCCESS_CASES_BY_TASK_ID: dict[str, list[dict]] = {
+    "C1": [
+        {
+            "name": "fit_predict_binary",
+            "init": {"args": [0.1, 400]},
+            "steps": [
+                {"call": "fit", "args": [[[0, 0], [0, 1], [1, 0], [1, 1]], [0, 0, 0, 1]]},
+                {"call": "predict", "args": [[[0, 0], [1, 1]]], "expect": [0, 1]},
+                {"call": "predict_proba", "args": [[[0, 0], [1, 1]]]},
+            ],
+            "notes": "Happy-path flow for fit/predict/predict_proba.",
+        }
+    ],
+    "C-BE": [
+        {
+            "name": "enqueue_dequeue_roundtrip",
+            "init": {"args": []},
+            "steps": [
+                {"call": "enqueue", "args": ["task-1"]},
+                {"call": "dequeue", "args": []},
+            ],
+            "notes": "Queue must accept and return an item without exceptions.",
+        }
+    ],
+    "C-rate": [
+        {
+            "name": "allow_within_capacity",
+            "init": {"args": [5, 1.0]},
+            "steps": [
+                {"call": "allow", "args": [1], "expect": True},
+                {"call": "allow", "args": [2], "expect": True},
+            ],
+            "notes": "Basic positive allowance checks.",
+        },
+        {
+            "name": "reject_above_capacity",
+            "init": {"args": [3, 1.0]},
+            "steps": [
+                {"call": "allow", "args": [4], "expect": False},
+            ],
+            "notes": "Must reject requests above capacity.",
+        },
+    ],
+}
+
+
+def _with_success_cases(tasks: list[dict]) -> tuple[list[dict], bool]:
+    changed = False
+    updated_tasks: list[dict] = []
+    for task in tasks or []:
+        if not isinstance(task, dict):
+            updated_tasks.append(task)
+            continue
+        current = dict(task)
+        task_id = current.get("id")
+        default_cases = DEFAULT_SUCCESS_CASES_BY_TASK_ID.get(task_id)
+        if (
+            current.get("type") == "coding"
+            and default_cases
+            and (not isinstance(current.get("success_cases"), list) or len(current.get("success_cases")) == 0)
+        ):
+            current["success_cases"] = deepcopy(default_cases)
+            changed = True
+        updated_tasks.append(current)
+    return updated_tasks, changed
+
+
+def _backfill_success_cases(db) -> None:
+    scenarios_db = db.query(models.Scenario).all()
+    changed_any = False
+    for scenario in scenarios_db:
+        tasks = scenario.tasks or []
+        updated_tasks, changed = _with_success_cases(tasks)
+        if changed:
+            scenario.tasks = updated_tasks
+            changed_any = True
+    if changed_any:
+        db.commit()
+
+
 def seed_defaults() -> None:
     """Insert demo roles/scenarios if DB is empty to avoid 404 on first run."""
     db = SessionLocal()
     try:
         if db.query(models.Role).count() > 0:
+            _backfill_success_cases(db)
             return
 
         ds = models.Role(name="Data Scientist", slug="ds", description="ML, эксперименты, метрики")
@@ -229,6 +311,9 @@ def seed_defaults() -> None:
                 ],
             ),
         ]
+        for scenario in scenarios_payload:
+            updated_tasks, _ = _with_success_cases(scenario.tasks or [])
+            scenario.tasks = updated_tasks
         db.add_all(scenarios_payload)
         db.commit()
     finally:

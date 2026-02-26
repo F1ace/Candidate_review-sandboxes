@@ -39,6 +39,6 @@ def _score_feedback(result: dict[str, Any]) -> str:
     task_id = result.get("task_id") or ""
     pts = result.get("points")
     comment = result.get("comment") or ""
-    pts_txt = f"{pts} Р±Р°Р»Р»(РѕРІ)" if pts is not None else "РѕС†РµРЅРєР° РІС‹СЃС‚Р°РІР»РµРЅР°"
-    return f"РћС†РµРЅРєР° СЃРѕС…СЂР°РЅРµРЅР°: {pts_txt} Р·Р° {task_id}. РљРѕРјРјРµРЅС‚Р°СЂРёР№: {comment}. РќР°Р¶РјРёС‚Рµ В«РЎР»РµРґСѓСЋС‰РµРµВ», С‡С‚РѕР±С‹ РїРµСЂРµР№С‚Рё РґР°Р»РµРµ."
+    pts_txt = f"{pts} балл(ов)" if pts is not None else "оценка выставлена"
+    return f"Оценка сохранена: {pts_txt} за {task_id}. Комментарий: {comment}. Нажмите «Следующее», чтобы перейти далее."
 

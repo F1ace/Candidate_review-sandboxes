@@ -48,7 +48,7 @@ def call_model(session_id: str, db: Session):
     assistant_msg = first_resp["choices"][0]["message"]
     tool_calls = assistant_msg.get("tool_calls")
 
-    # Fallback: РµСЃР»Рё tool_calls РЅРµС‚, РЅРѕ РјРѕРґРµР»СЊ РЅР°РїРµС‡Р°С‚Р°Р»Р° tool-call С‚РµРєСЃС‚РѕРј
+    # Fallback: если tool_calls нет, но модель напечатала tool-call текстом
     if not tool_calls:
         content = assistant_msg.get("content") or ""
         inline = _extract_inline_tool_call(content)
@@ -62,7 +62,7 @@ def call_model(session_id: str, db: Session):
                     "arguments": json.dumps(args, ensure_ascii=False),
                 },
             }]
-            # С‡С‚РѕР±С‹ "<|channel|>commentary ..." РЅРµ РїРѕРєР°Р·С‹РІР°Р»СЃСЏ РІ UI
+            # чтобы "<|channel|>commentary ..." не показывался в UI
             assistant_msg["content"] = None
 
     messages.append(assistant_msg)
@@ -103,13 +103,13 @@ def call_model(session_id: str, db: Session):
                 messages.append({
                     "role": "system",
                     "content": (
-                        "РўР•РћР РРЇ Р—РђР’Р•Р РЁР•РќРђ.\n"
-                        "РќСѓР¶РЅРѕ: 1) РєСЂР°С‚РєРѕ СЃРѕРѕР±С‰РёС‚СЊ РёС‚РѕРі С‚РµРѕСЂРёРё, 2) РѕР±СЉСЏРІРёС‚СЊ РїРµСЂРµС…РѕРґ Рє РїСЂР°РєС‚РёРєРµ, "
-                        "3) СЃРєР°Р·Р°С‚СЊ, С‡С‚Рѕ РїРѕР»СЊР·РѕРІР°С‚РµР»СЋ РЅСѓР¶РЅРѕ РїРµСЂРµР№С‚Рё РЅР° РІРєР»Р°РґРєСѓ В«РџСЂР°РєС‚РёРєР°В», РІСЃС‚Р°РІРёС‚СЊ СЂРµС€РµРЅРёРµ РІ СЂРµРґР°РєС‚РѕСЂ Рё РЅР°Р¶Р°С‚СЊ В«РџСЂРѕРІРµСЂРёС‚СЊ РјРѕРґРµР»СЊСЋВ», "
-                        "4) РЅР°Р·РІР°С‚СЊ СЃР»РµРґСѓСЋС‰РµРµ РїСЂР°РєС‚РёС‡РµСЃРєРѕРµ Р·Р°РґР°РЅРёРµ.\n\n"
+                        "ТЕОРИЯ ЗАВЕРШЕНА.\n"
+                        "Нужно: 1) кратко сообщить итог теории, 2) объявить переход к практике, "
+                        "3) сказать, что пользователю нужно перейти на вкладку «Практика», вставить решение в редактор и нажать «Проверить моделью», "
+                        "4) назвать следующее практическое задание.\n\n"
                         f"{summary}\n"
-                        f"РЎР»РµРґСѓСЋС‰РµРµ РїСЂР°РєС‚РёС‡РµСЃРєРѕРµ Р·Р°РґР°РЅРёРµ: {practice_id} {practice_title} (С‚РёРї: {practice_type}).\n"
-                        f"РћРїРёСЃР°РЅРёРµ: {practice_desc}\n"
+                        f"Следующее практическое задание: {practice_id} {practice_title} (тип: {practice_type}).\n"
+                        f"Описание: {practice_desc}\n"
                     )
                 })
             tool_messages.append(
@@ -138,12 +138,12 @@ def call_model(session_id: str, db: Session):
         try:
             second_resp = lm_client.chat(messages, tools=TOOLS)
             final_msg = second_resp["choices"][0]["message"]
-            # --- Fallback 2: РјРѕРґРµР»СЊ РјРѕРіР»Р° "РЅР°РїРµС‡Р°С‚Р°С‚СЊ" tool-call С‚РµРєСЃС‚РѕРј РІРѕ РІС‚РѕСЂРѕРј РѕС‚РІРµС‚Рµ ---
+            # --- Fallback 2: модель могла "напечатать" tool-call текстом во втором ответе ---
             if not (final_msg.get("tool_calls") or []):
                 inline = _extract_inline_tool_call(final_msg.get("content") or "")
                 if inline:
                     tool_name, args = inline
-                    # РІС‹РїРѕР»РЅРёРј tool РІСЂСѓС‡РЅСѓСЋ, РєР°Рє РµСЃР»Рё Р±С‹ СЌС‚Рѕ Р±С‹Р» tool_call
+                    # выполним tool вручную, как если бы это был tool_call
                     fake_tc = {
                         "id": "inline_toolcall_2",
                         "type": "function",
@@ -154,7 +154,7 @@ def call_model(session_id: str, db: Session):
                     }
                     result = _dispatch_tool_call(session, fake_tc, db)
 
-                    # Р·Р°Р»РѕРіРёСЂСѓРµРј tool РІ Р‘Р” (РєР°Рє С‚С‹ РґРµР»Р°РµС€СЊ РІС‹С€Рµ РґР»СЏ tool_calls)
+                    # залогируем tool в БД (как ты делаешь выше для tool_calls)
                     db.add(models.Message(
                         session_id=session_id,
                         sender="tool",
@@ -163,7 +163,7 @@ def call_model(session_id: str, db: Session):
                     ))
                     db.commit()
 
-                    # РґРѕР±Р°РІРёРј tool-РѕС‚РІРµС‚ РІ messages Рё СЃРїСЂРѕСЃРёРј РјРѕРґРµР»СЊ РµС‰С‘ СЂР°Р·
+                    # добавим tool-ответ в messages и спросим модель ещё раз
                     messages.append({"role": "assistant", "content": None})
                     messages.append({
                         "role": "tool",

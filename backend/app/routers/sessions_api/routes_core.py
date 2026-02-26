@@ -127,11 +127,11 @@ def practice_sql(session_id: str, payload: PracticeSqlRequest, db: Session = Dep
     if not task:
         raise HTTPException(status_code=404, detail="Task not found in scenario")
 
-    # РРЅСЃС‚СЂСѓРєС†РёСЏ РјРѕРґРµР»Рё: РѕРЅР° РґРѕР»Р¶РЅР° РІС‹Р·РІР°С‚СЊ run_sql
+    # Инструкция модели: она должна вызвать run_sql
     instruction = (
-        f"РџСЂРѕРІРµСЂСЊ СЂРµС€РµРЅРёРµ РєР°РЅРґРёРґР°С‚Р° РґР»СЏ sql-Р·Р°РґР°С‡Рё {payload.task_id} ({task.get('title','')}).\n"
-        f"РЎРќРђР§РђР›Рђ РІС‹Р·РѕРІРё РёРЅСЃС‚СЂСѓРјРµРЅС‚ run_sql СЃ sql_scenario_id='{payload.sql_scenario_id}' Рё query.\n"
-        f"РџРћРўРћРњ РѕР±СЉСЏСЃРЅРё СЂРµР·СѓР»СЊС‚Р°С‚ (РѕС€РёР±РєРё/Р·Р°РјРµС‡Р°РЅРёСЏ), РґР°Р№ СЂРµРєРѕРјРµРЅРґР°С†РёРё Рё РїСЂРё РЅРµРѕР±С…РѕРґРёРјРѕСЃС‚Рё РѕС†РµРЅРё С‡РµСЂРµР· score_task.\n\n"
+        f"Проверь решение кандидата для sql-задачи {payload.task_id} ({task.get('title','')}).\n"
+        f"СНАЧАЛА вызови инструмент run_sql с sql_scenario_id='{payload.sql_scenario_id}' и query.\n"
+        f"ПОТОМ объясни результат (ошибки/замечания), дай рекомендации и при необходимости оцени через score_task.\n\n"
         f"SQL:\n{payload.query}"
     )
 
@@ -166,19 +166,19 @@ def practice_code(session_id: str, payload: PracticeCodeRequest, db: Session = D
     session.current_task_id = payload.task_id
     db.commit()
 
-    # РђРіРµРЅС‚РЅР°СЏ РїСЂРѕРІРµСЂРєР°: РјРѕРґРµР»СЊ СЃР°РјР° РІС‹Р·С‹РІР°РµС‚ tools РїРѕ РїСЂРѕС‚РѕРєРѕР»Сѓ
+    # Агентная проверка: модель сама вызывает tools по протоколу
     instruction = (
-        f"РўС‹ РїСЂРѕРІРµСЂСЏРµС€СЊ coding-Р·Р°РґР°С‡Сѓ {payload.task_id} ({task.get('title','')}).\n"
-        "РўС‹ Р”РћР›Р–Р•Рќ РІС‹РїРѕР»РЅРёС‚СЊ РїСЂРѕРІРµСЂРєСѓ СЃС‚СЂРѕРіРѕ РїРѕ С€Р°РіР°Рј С‡РµСЂРµР· РёРЅСЃС‚СЂСѓРјРµРЅС‚С‹:\n"
+        f"Ты проверяешь coding-задачу {payload.task_id} ({task.get('title','')}).\n"
+        "Ты ДОЛЖЕН выполнить проверку строго по шагам через инструменты:\n"
         "1) build_sanity_checks(task_id, language)\n"
         "2) generate_test_cases(task_id, n=10)\n"
         "3) compose_harness(task_id, language, candidate_code, sanity_code, cases)\n"
         "4) run_code(language, code=<harness_code>)\n"
-        "5) РќР° РѕСЃРЅРѕРІРµ JSON РёР· stdout (sanity/cases/passrate) РґР°Р№ РєРѕСЂРѕС‚РєРёР№ РёС‚РѕРі Рё РІС‹Р·РѕРІРё score_task.\n\n"
-        "Р’РђР–РќРћ:\n"
-        "- Р—Р°РїСЂРµС‰РµРЅРѕ РїРёСЃР°С‚СЊ 'score_task -> {...}' С‚РµРєСЃС‚РѕРј. РСЃРїРѕР»СЊР·СѓР№ С‚РѕР»СЊРєРѕ tool-РІС‹Р·РѕРІ.\n"
-        "- Р—Р°РїСЂРµС‰РµРЅРѕ РѕС‚РІРµС‡Р°С‚СЊ РєР°РЅРґРёРґР°С‚Сѓ Р”Рћ Р·Р°РІРµСЂС€РµРЅРёСЏ РїР°Р№РїР»Р°Р№РЅР° (РІРєР»СЋС‡Р°СЏ score_task).\n\n"
-        f"РљРћР” РљРђРќР”РР”РђРўРђ:\n{payload.code}\n"
+        "5) На основе JSON из stdout (sanity/cases/passrate) дай короткий итог и вызови score_task.\n\n"
+        "ВАЖНО:\n"
+        "- Запрещено писать 'score_task -> {...}' текстом. Используй только tool-вызов.\n"
+        "- Запрещено отвечать кандидату ДО завершения пайплайна (включая score_task).\n\n"
+        f"КОД КАНДИДАТА:\n{payload.code}\n"
     )
 
     review = _practice_agent_review(

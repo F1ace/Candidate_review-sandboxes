@@ -12,7 +12,7 @@ def _control_state(session: models.Session, history: list[models.Message]) -> di
     intro_done = any(m.sender == "model" for m in history)
     scores = session.scores or {}
     task_status = {tid: "scored" for tid in scores.keys()}
-    current_task = session.current_task_id or (session.scenario.tasks[0]["id"] if session.scenario.tasks else "РЅРµС‚")
+    current_task = session.current_task_id or (session.scenario.tasks[0]["id"] if session.scenario.tasks else "нет")
     awaiting_next = current_task in task_status
     return {
         "intro_done": intro_done,
@@ -43,7 +43,7 @@ def _semantic_memory(session: models.Session) -> dict[str, Any]:
         elif ratio <= 0.5:
             weaknesses.update(topics)
             for t in topics:
-                issues.append({"key": f"weak_{t}", "text": f"РќРёР·РєРёР№ Р±Р°Р»Р» РїРѕ С‚РµРјРµ {t}"})
+                issues.append({"key": f"weak_{t}", "text": f"Низкий балл по теме {t}"})
     return {
         "strengths": list(strengths),
         "weaknesses": list(weaknesses),
@@ -77,9 +77,9 @@ def _conversation_snapshot(session: models.Session, history: list[models.Message
     sem = _semantic_memory(session)
     episodic = _episodic_memory(history)
     last_user = next((m for m in reversed(history) if m.sender == "candidate"), None)
-    last_user_text = (last_user.text if last_user else "РЅРµС‚ РїРѕСЃР»РµРґРЅРёС… РІРѕРїСЂРѕСЃРѕРІ")[:200]
+    last_user_text = (last_user.text if last_user else "нет последних вопросов")[:200]
     last_model = next((m for m in reversed(history) if m.sender == "model"), None)
-    last_model_text = (last_model.text if last_model else "РЅРµС‚")[:200]
+    last_model_text = (last_model.text if last_model else "нет")[:200]
     return (
         "<CONTROL_STATE>"
         f"<INTRO_DONE>{control['intro_done']}</INTRO_DONE>"
@@ -100,7 +100,7 @@ def _conversation_snapshot(session: models.Session, history: list[models.Message
         "</EPISODIC_MEMORY>"
         f"<LAST_USER>{last_user_text}</LAST_USER>"
         f"<LAST_MODEL>{last_model_text}</LAST_MODEL>"
-        "РќРµ РїРѕРІС‚РѕСЂСЏР№ СѓР¶Рµ СЃРєР°Р·Р°РЅРЅРѕРµ; РїСЂРѕРґРѕР»Р¶Р°Р№ РґРёР°Р»РѕРі Р»РѕРіРёС‡РЅРѕ Рё РЅРµ РЅР°С‡РёРЅР°Р№ РЅРѕРІСѓСЋ Р·Р°РґР°С‡Сѓ Р±РµР· СЏРІРЅРѕРіРѕ РїРµСЂРµС…РѕРґР°."
+        "Не повторяй уже сказанное; продолжай диалог логично и не начинай новую задачу без явного перехода."
     )
 
 def _theory_tasks(scenario: models.Scenario) -> list[dict[str, Any]]:
@@ -131,8 +131,8 @@ def _theory_summary_text(session: models.Session) -> str:
         maximum += max_pts
         earned += float(scores.get(tid, 0))
 
-    # РµСЃР»Рё max_points РЅРµ Р·Р°РїРѕР»РЅРµРЅС‹, РІСЃС‘ СЂР°РІРЅРѕ РїРѕРєР°Р¶РµРј СЃРєРѕР»СЊРєРѕ Р·Р°РґР°РЅРёР№ РѕС†РµРЅРµРЅРѕ
+    # если max_points не заполнены, всё равно покажем сколько заданий оценено
     if maximum <= 0:
-        return f"РўРµРѕСЂРёСЏ Р·Р°РІРµСЂС€РµРЅР°. РћС†РµРЅРµРЅРѕ Р·Р°РґР°РЅРёР№: {sum(1 for t in theory if t.get('id') in scores)}/{len(theory)}."
-    return f"РўРµРѕСЂРёСЏ Р·Р°РІРµСЂС€РµРЅР°. РС‚РѕРі: {earned:g}/{maximum:g}."
+        return f"Теория завершена. Оценено заданий: {sum(1 for t in theory if t.get('id') in scores)}/{len(theory)}."
+    return f"Теория завершена. Итог: {earned:g}/{maximum:g}."
 
