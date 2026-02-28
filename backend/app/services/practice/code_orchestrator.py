@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import logging
@@ -11,7 +11,7 @@ from .workflow import CODE_PIPELINE, CodeWorkflowState
 
 
 def _extract_candidate_code(instruction: str) -> str:
-    markers = ("КОД КАНДИДАТА:", "РљРћР” РљРђРќР”РР”РђРўРђ:", "CODE:")
+    markers = ("КОД КАНДИДАТА:", "CODE:")
     for marker in markers:
         if marker in instruction:
             return instruction.split(marker, 1)[1].strip()
@@ -43,12 +43,6 @@ def _pipeline_text() -> str:
 
 def _next_step_hint(next_tool: str) -> str:
     idx = CODE_PIPELINE.index(next_tool) + 1
-    if next_tool == "build_sanity_checks":
-        return f"{idx}) build_sanity_checks(task_id, language)"
-    if next_tool == "generate_test_cases":
-        return f"{idx}) generate_test_cases(task_id, n=10)"
-    if next_tool == "compose_harness":
-        return f"{idx}) compose_harness(task_id, language, candidate_code, sanity_code, cases)"
     if next_tool == "run_code":
         return f"{idx}) run_code(language, code=<harness_code>)"
     if next_tool == "score_task":
@@ -58,22 +52,16 @@ def _next_step_hint(next_tool: str) -> str:
 
 def _autofinal_summary(state: CodeWorkflowState) -> str:
     report = state.artifacts.get("run_report") or {}
-    sanity = report.get("sanity") or {}
-    cases = report.get("cases") or {}
     passrate = float(report.get("passrate") or 0.0)
     score = state.artifacts.get("score_result") or {}
     points = score.get("points")
 
-    summary = (
-        "Проверка завершена. "
-        f"Sanity: {int(sanity.get('passed', 0))} passed / {int(sanity.get('failed', 0))} failed. "
-        f"Cases: {int(cases.get('passed', 0))} passed / {int(cases.get('failed', 0))} failed. "
-        f"Passrate: {passrate:.2%}."
-    )
+    summary = "Проверка завершена. "
+    if report:
+        summary += f"Passrate: {passrate:.2%}. "
     if points is not None:
-        summary += f" Оценка: {points}."
-    return summary
-
+        summary += f"Оценка: {points}."
+    return summary.strip()
 
 def run_practice_code_review(
     *,

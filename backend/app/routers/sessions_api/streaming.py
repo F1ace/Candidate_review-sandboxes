@@ -1,4 +1,4 @@
-﻿import json
+import json
 from typing import Any
 
 from fastapi import HTTPException
@@ -45,9 +45,9 @@ def stream_model(session_id: str):
     if last_msg and last_msg.sender == "candidate":
         flags = _analyze_candidate_message(last_msg.text)
         if flags:
-            warn = "РћС‚РІРµС‚ РЅРµ РїСЂРёРЅСЏС‚: РґР°Р№С‚Рµ СЃРѕРґРµСЂР¶Р°С‚РµР»СЊРЅС‹Р№ РѕС‚РІРµС‚ РїРѕ СЃСѓС‚Рё РІРѕРїСЂРѕСЃР°."
+            warn = "Ответ не принят: дайте содержательный ответ по сути вопроса."
             if "code_in_chat" in flags or "sql_in_chat" in flags:
-                warn = "РќРµ РІСЃС‚Р°РІР»СЏР№С‚Рµ РєРѕРґ/SQL РІ С‡Р°С‚. Р’РІРµРґРёС‚Рµ СЂРµС€РµРЅРёРµ РІ СЂРµРґР°РєС‚РѕСЂ РЅРёР¶Рµ Рё РЅР°Р¶РјРёС‚Рµ Submit."
+                warn = "Не вставляйте код/SQL в чат. Введите решение в редактор ниже и нажмите Submit."
             base_db.add(models.Message(session_id=session_id, sender="system", text=warn))
             base_db.commit()
             base_db.close()
@@ -81,7 +81,7 @@ def stream_model(session_id: str):
     assistant_msg = first_resp["choices"][0]["message"]
     tool_calls = assistant_msg.get("tool_calls")
 
-    # Fallback: РµСЃР»Рё tool_calls РЅРµС‚, РЅРѕ РјРѕРґРµР»СЊ РІС‹РІРµР»Р° tool-call С‚РµРєСЃС‚РѕРј вЂ” СЂР°СЃРїРѕР·РЅР°С‘Рј Рё РёСЃРїРѕР»РЅСЏРµРј
+    # Fallback: если tool_calls нет, но модель вывела tool-call текстом — распознаём и исполняем
     if not tool_calls:
         content = assistant_msg.get("content") or ""
         inline = _extract_inline_tool_call(content)
@@ -95,7 +95,7 @@ def stream_model(session_id: str):
                     "arguments": json.dumps(args, ensure_ascii=False),
                 },
             }]
-            # С‡С‚РѕР±С‹ СЌС‚РѕС‚ РјСѓСЃРѕСЂ РЅРµ СѓР»РµС‚РµР» РїРѕР»СЊР·РѕРІР°С‚РµР»СЋ РєР°Рє "РѕС‚РІРµС‚ РјРѕРґРµР»Рё"
+            # чтобы этот мусор не улетел пользователю как "ответ модели"
             assistant_msg["content"] = None
 
     stream_messages = list(base_messages)
@@ -110,7 +110,7 @@ def stream_model(session_id: str):
         for tc in tool_calls:
             fname = tc["function"]["name"]
 
-            # СЂР°СЃРїР°СЂСЃРёС‚СЊ args Р±РµР·РѕРїР°СЃРЅРѕ
+            # распарсить args безопасно
             try:
                 args = json.loads(tc["function"].get("arguments") or "{}")
             except Exception:
@@ -119,12 +119,12 @@ def stream_model(session_id: str):
             task_id_for_db = args.get("task_id")
 
             if fname == "web_search":
-                status_text = f"РС‰РµРј РІ РёРЅС‚РµСЂРЅРµС‚Рµ: {args.get('query', '')}"
+                status_text = f"Ищем в интернете: {args.get('query', '')}"
                 base_db.add(models.Message(session_id=session_id, sender="system", text=status_text))
                 base_db.commit()
                 status_events.append(status_text)
 
-            # СЃРЅР°С‡Р°Р»Р° РІС‹С‡РёСЃР»СЏРµРј result (Рё РЅРµ СЂРѕРЅСЏРµРј СЃС‚СЂРёРј, РµСЃР»Рё tool СѓРїР°Р»)
+            # сначала вычисляем result (и не роняем стрим, если tool упал)
             try:
                 result = _dispatch_tool_call(session, tc, base_db)
             except Exception as e:
@@ -134,8 +134,8 @@ def stream_model(session_id: str):
             if fname == "score_task":
                 score_result_payload = result
 
-                # Р•СЃР»Рё СЌС‚Рѕ РѕС†РµРЅРєР° С‚РµРѕСЂРµС‚РёС‡РµСЃРєРѕРіРѕ Р·Р°РґР°РЅРёСЏ Рё С‚РµРѕСЂРёСЏ С‚РµРїРµСЂСЊ Р·Р°РІРµСЂС€РµРЅР° вЂ”
-                # РїСЂРѕСЃРёРј РјРѕРґРµР»СЊ РІ С„РёРЅР°Р»СЊРЅРѕРј РѕС‚РІРµС‚Рµ РїРѕРґРІРµСЃС‚Рё РёС‚РѕРі Рё РїРµСЂРµРєР»СЋС‡РёС‚СЊ РЅР° РїСЂР°РєС‚РёРєСѓ.
+                # Если это оценка теоретического задания и теория теперь завершена —
+                # просим модель в финальном ответе подвести итог и переключить на практику.
                 if not transition_added:
                     task_id_scored = args.get("task_id")
                     task_obj = _get_task_by_id(session.scenario, task_id_scored) if task_id_scored else None
@@ -161,22 +161,22 @@ def stream_model(session_id: str):
                             {
                                 "role": "system",
                                 "content": (
-                                    "РўР•РћР РРЇ Р—РђР’Р•Р РЁР•РќРђ.\n"
-                                    "Р—Р°РїСЂРµС‰РµРЅРѕ: РїСЂРёРІРµС‚СЃС‚РІРёСЏ, РїРѕРІС‚РѕСЂ РІР°С€РµРіРѕ РїР»Р°РЅР°, РїРѕРІС‚РѕСЂ С„РѕСЂРјСѓР»РёСЂРѕРІРѕРє С‚РµРѕСЂРµС‚РёС‡РµСЃРєРёС… РІРѕРїСЂРѕСЃРѕРІ.\n"
-                                    "РќСѓР¶РЅРѕ: 1) РєСЂР°С‚РєРѕ СЃРѕРѕР±С‰РёС‚СЊ РёС‚РѕРі С‚РµРѕСЂРёРё, 2) РѕР±СЉСЏРІРёС‚СЊ РїРµСЂРµС…РѕРґ Рє РїСЂР°РєС‚РёРєРµ, "
-                                    "3) СЃРєР°Р·Р°С‚СЊ, С‡С‚Рѕ РїРѕР»СЊР·РѕРІР°С‚РµР»СЋ РЅСѓР¶РЅРѕ РїРµСЂРµР№С‚Рё РЅР° РІРєР»Р°РґРєСѓ В«РџСЂР°РєС‚РёРєР°В», РІСЃС‚Р°РІРёС‚СЊ СЂРµС€РµРЅРёРµ РІ СЂРµРґР°РєС‚РѕСЂ Рё РЅР°Р¶Р°С‚СЊ В«РџСЂРѕРІРµСЂРёС‚СЊ РјРѕРґРµР»СЊСЋВ», "
-                                    "4) РЅР°Р·РІР°С‚СЊ СЃР»РµРґСѓСЋС‰РµРµ РїСЂР°РєС‚РёС‡РµСЃРєРѕРµ Р·Р°РґР°РЅРёРµ.\n\n"
+                                    "ТЕОРИЯ ЗАВЕРШЕНА.\n"
+                                    "Запрещено: приветствия, повтор вашего плана, повтор формулировок теоретических вопросов.\n"
+                                    "Нужно: 1) кратко сообщить итог теории, 2) объявить переход к практике, "
+                                    "3) сказать, что пользователю нужно перейти на вкладку «Практика», вставить решение в редактор и нажать «Проверить моделью», "
+                                    "4) назвать следующее практическое задание.\n\n"
                                     f"{summary}\n"
-                                    f"РЎР»РµРґСѓСЋС‰РµРµ РїСЂР°РєС‚РёС‡РµСЃРєРѕРµ Р·Р°РґР°РЅРёРµ: {practice_id or ''} {practice_title or ''} (С‚РёРї: {practice_type or ''}).\n"
-                                    f"РћРїРёСЃР°РЅРёРµ: {practice_desc}\n"
+                                    f"Следующее практическое задание: {practice_id or ''} {practice_title or ''} (тип: {practice_type or ''}).\n"
+                                    f"Описание: {practice_desc}\n"
                                 ),
                             }
                         )
 
-            # tool_call_id РЅСѓР¶РµРЅ РјРѕРґРµР»Рё РґР»СЏ РїСЂРёРІСЏР·РєРё СЂРµР·СѓР»СЊС‚Р°С‚Р° Рє РІС‹Р·РѕРІСѓ
+            # tool_call_id нужен модели для привязки результата к вызову
             tc_id = tc.get("id") or f"{fname}_call"
 
-            # РґРѕР±Р°РІР»СЏРµРј tool-result РІ РёСЃС‚РѕСЂРёСЋ РґР»СЏ РјРѕРґРµР»Рё
+            # добавляем tool-result в историю для модели
             stream_messages.append(
                 {
                     "role": "tool",
@@ -185,7 +185,7 @@ def stream_model(session_id: str):
                 }
             )
 
-            # СЃРѕС…СЂР°РЅСЏРµРј РґР»СЏ Р·Р°РїРёСЃРё РІ Р‘Р” (sender=tool)
+            # сохраняем для записи в БД (sender=tool)
             tool_results_payload.append(
                 {
                     "name": fname,
@@ -247,7 +247,7 @@ def stream_model(session_id: str):
                     if "<think>" in chunk:
                         saw_think = True
                     if not saw_think and not revealed:
-                        revealed = True  # РЅРµС‚ Р±Р»РѕРєР° СЂР°Р·РјС‹С€Р»РµРЅРёР№ вЂ“ СЃС‚СЂРёРјРёРј СЃСЂР°Р·Сѓ
+                        revealed = True  # нет блока размышлений – стримим сразу
                     if saw_think and not revealed:
                         hidden_buffer += chunk
                         if "</think>" in hidden_buffer:
@@ -294,7 +294,7 @@ def stream_model(session_id: str):
                 models.Message(
                     session_id=session_id,
                     sender="system",
-                    text=f"РћС€РёР±РєР° СЃРµСЂРІРёСЃР° LM Studio: {exc}",
+                    text=f"Ошибка сервиса LM Studio: {exc}",
                 )
             )
             local_db.commit()

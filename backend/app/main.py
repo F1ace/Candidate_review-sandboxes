@@ -47,13 +47,19 @@ def seed_defaults() -> None:
     """Insert demo roles/scenarios if DB is empty to avoid 404 on first run."""
     db = SessionLocal()
     try:
-        if db.query(models.Role).count() > 0:
-            return
+        ds = db.query(models.Role).filter_by(slug="ds").one_or_none()
+        be = db.query(models.Role).filter_by(slug="backend").one_or_none()
+        de = db.query(models.Role).filter_by(slug="de").one_or_none()
 
-        ds = models.Role(name="Data Scientist", slug="ds", description="ML, эксперименты, метрики")
-        be = models.Role(name="Backend", slug="backend", description="API, очереди, устойчивость")
-        de = models.Role(name="Data Engineer", slug="de", description="ETL, SQL, пайплайны")
-        db.add_all([ds, be, de])
+        if not ds:
+            ds = models.Role(name="Data Scientist", slug="ds", description="ML, эксперименты, метрики")
+            db.add(ds)
+        if not be:
+            be = models.Role(name="Backend", slug="backend", description="API, очереди, устойчивость")
+            db.add(be)
+        if not de:
+            de = models.Role(name="Data Engineer", slug="de", description="ETL, SQL, пайплайны")
+            db.add(de)
         db.flush()
 
         scenarios_payload = [
@@ -132,6 +138,91 @@ def seed_defaults() -> None:
                         "max_points": 8,
                         "related_topics": ["joins", "aggregation"],
                     },
+                ],
+            ),
+            models.Scenario(
+                role_id=be.id,
+                name="Backend — Junior — URL Shortener",
+                slug="be-junior-shortener",
+                description="Отличие между GET и Post запросами, значение статусов, определение + пример индепендности, реализация класса UrlShortener",
+                difficulty="junior",
+                tasks=[
+                    {
+                        "id": "T-JUNIOR-BE",
+                        "type": "theory",
+                        "title": "Backend Junior — базовые понятия HTTP и API",
+                        "max_points": 5,
+                        "questions": [
+                            "Чем отличаются GET и POST? Приведи пример для REST API.",
+                            "Что означают статусы: 200, 201, 400, 404, 409, 500?",
+                            "Что такое идемпотентность? Приведи пример идемпотентного запроса.",
+                        ],
+                        "hints_allowed": True,
+                    },
+                    {
+                        "id": "C-SHORTENER",
+                        "type": "coding",
+                        "language": "python",
+                        "title": "Design URL Shortener",
+                        "max_points": 10,
+                        "tests_id": "shortener_basic",
+
+                        # LeetCode-like statement (markdown)
+                        "statement_md": """
+            Задача:
+            Реализуйте упрощённый сокращатель ссылок.
+
+            Нужно реализовать класс "UrlShortener", который поддерживает две операции:
+
+            1. "encode(url: str) -> str" — возвращает короткий код для переданного URL  
+            2. "decode(code: str) -> str" — по коду возвращает исходный URL
+
+            Считайте, что сервис находится в памяти (без БД) в рамках одного запуска.
+
+            Требования:
+            1) "encode()" должен возвращать один и тот же код для одного и того же URL (идемпотентность).  
+            2) "decode()" для неизвестного "code" должен выбрасывать "KeyError".  
+            3) Код должен состоять только из символов "[A-Za-z0-9]" и иметь длину 6.  
+            4) Ожидаемая сложность:
+            - "encode": амортизированно O(1)
+            - "decode": O(1)
+
+            Пример:
+            Ввод / действия:
+            - "s.encode("https://example.com")" → "aB3xK1"
+            - "s.encode("https://example.com")" → "aB3xK1" (тот же код)
+            - "s.decode("aB3xK1")" → "https://example.com"
+            """.strip(),
+
+                        # Starter code shown in editor
+                        "starter_code": '''
+            from __future__ import annotations
+
+            import secrets
+            import string
+
+            ALPHABET = string.ascii_letters + string.digits
+            CODE_LEN = 6
+
+            class UrlShortener:
+                def __init__(self) -> None:
+                    
+                    self._url_to_code: dict[str, str] = {}
+                    self._code_to_url: dict[str, str] = {}
+
+                def _gen_code(self) -> str:
+
+                    return "".join(secrets.choice(ALPHABET) for _ in range(CODE_LEN))
+
+                def encode(self, url: str) -> str:
+
+                    raise NotImplementedError
+
+                def decode(self, code: str) -> str:
+                    
+                    raise NotImplementedError
+            '''.strip(),
+                    }
                 ],
             ),
             models.Scenario(
@@ -229,7 +320,21 @@ def seed_defaults() -> None:
                 ],
             ),
         ]
-        db.add_all(scenarios_payload)
+        # Upsert scenarios by slug: insert new, update existing
+        for sc in scenarios_payload:
+            existing = db.query(models.Scenario).filter_by(slug=sc.slug).one_or_none()
+            if existing is None:
+                db.add(sc)
+            else:
+                # update mutable fields
+                existing.role_id = sc.role_id
+                existing.name = sc.name
+                existing.description = sc.description
+                existing.difficulty = sc.difficulty
+                existing.tasks = sc.tasks
+                existing.rag_corpus_id = sc.rag_corpus_id
+                existing.sql_scenario_id = sc.sql_scenario_id
+
         db.commit()
     finally:
         db.close()

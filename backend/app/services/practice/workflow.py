@@ -5,9 +5,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 CODE_PIPELINE: tuple[str, ...] = (
-    "build_sanity_checks",
-    "generate_test_cases",
-    "compose_harness",
     "run_code",
     "score_task",
 )
@@ -76,31 +73,6 @@ class CodeWorkflowState:
         err = has_tool_error(result)
         if err:
             return False, err
-
-        if name == "build_sanity_checks":
-            code = result.get("code") if isinstance(result, dict) else None
-            if isinstance(code, str) and code.strip():
-                self.artifacts["sanity_code"] = code
-                self._complete(name)
-                return True, None
-            return False, "build_sanity_checks: missing non-empty code"
-
-        if name == "generate_test_cases":
-            cases = result.get("cases") if isinstance(result, dict) else None
-            if isinstance(cases, list) and len(cases) > 0:
-                self.artifacts["cases"] = cases
-                self._complete(name)
-                return True, None
-            return False, "generate_test_cases: missing non-empty cases"
-
-        if name == "compose_harness":
-            harness_code = result.get("harness_code") if isinstance(result, dict) else None
-            if isinstance(harness_code, str) and harness_code.strip():
-                self.artifacts["harness_code"] = harness_code
-                self._complete(name)
-                return True, None
-            return False, "compose_harness: missing harness_code"
-
         if name == "run_code":
             report = parse_run_code_report(result)
             if report is not None:
@@ -128,43 +100,25 @@ class CodeWorkflowState:
     ) -> tuple[dict[str, Any], str | None]:
         payload = dict(args or {})
 
-        if name in {"build_sanity_checks", "generate_test_cases", "compose_harness", "score_task", "run_code"}:
+        # Общие поля для tools
+        if name in {"score_task", "run_code"}:
             payload["task_id"] = payload.get("task_id") or task_id
 
-        if name == "build_sanity_checks":
-            payload["language"] = payload.get("language") or "python"
-            return payload, None
-
-        if name == "generate_test_cases":
-            payload["n"] = int(payload.get("n") or 10)
-            return payload, None
-
-        if name == "compose_harness":
-            sanity_code = payload.get("sanity_code") or self.artifacts.get("sanity_code")
-            cases = payload.get("cases") or self.artifacts.get("cases")
-            if not isinstance(sanity_code, str) or not sanity_code.strip():
-                return payload, "compose_harness requires sanity_code from build_sanity_checks"
-            if not isinstance(cases, list) or len(cases) == 0:
-                return payload, "compose_harness requires cases from generate_test_cases"
-            payload["language"] = payload.get("language") or "python"
-            payload["candidate_code"] = payload.get("candidate_code") or candidate_code
-            payload["sanity_code"] = sanity_code
-            payload["cases"] = cases
-            return payload, None
-
         if name == "run_code":
-            harness_code = payload.get("code") or self.artifacts.get("harness_code")
-            if not isinstance(harness_code, str) or not harness_code.strip():
-                return payload, "run_code requires harness_code from compose_harness"
+            # Пока нет harness/тестов — запускается код кандидата как есть.
+            # Позже заменить это на server-side harness + тесты из БД.
             payload["language"] = payload.get("language") or "python"
-            payload["code"] = harness_code
+            payload["code"] = payload.get("code") or candidate_code
             return payload, None
 
         if name == "score_task":
             report = self.artifacts.get("run_report") or {}
             passrate = float(report.get("passrate") or 0.0)
             payload["points"] = payload.get("points", round(self.max_points * passrate, 2))
-            payload["comment"] = payload.get("comment") or "Оценка выставлена автоматически по результатам прогона harness."
+            payload["comment"] = payload.get("comment") or (
+                "Оценка выставлена автоматически по результатам выполнения кода "
+                "(пока без тест-кейсов из БД)."
+            )
             return payload, None
 
         return payload, f"unsupported workflow tool: {name}"

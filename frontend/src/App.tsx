@@ -17,6 +17,8 @@ type Task = {
   sql_scenario_id?: string;
   language?: string;
   hints_allowed?: boolean;
+  statement_md?: string;
+  starter_code?: string;
 };
 
 type Role = {
@@ -167,6 +169,18 @@ function App() {
       if (first) setSelectedScenario(first.id);
     }
   }, [selectedRole, selectedScenario, scenarios]);
+
+  useEffect(() => {
+  if (!currentTask) return;
+
+  if (currentTask.type === "coding") {
+    setCodeDraft(currentTask.starter_code || "# Напишите решение здесь\n");
+  }
+
+  if (currentTask.type === "sql") {
+    setSqlDraft(currentTask.description_for_candidate ? "-- Напишите SQL здесь\n" : "select 1;");
+  }
+}, [currentTask?.id]);
 
   const sampleRoles = (): Role[] => [
     { id: 1, name: "Data Scientist", slug: "ds", description: "ML, эксперименты, метрики" },
@@ -552,6 +566,12 @@ function App() {
     return "";
   };
 
+  const difficultyOrder: Record<string, number> = {
+    junior: 0,
+    middle: 1,
+    senior: 2,
+  };
+
   return (
     <div className="page">
       <header className="hero">
@@ -613,6 +633,12 @@ function App() {
               <div className="scenario-list">
                 {(scenarios || [])
                   .filter((s) => !selectedRole || s.role_id === selectedRole)
+                  .sort((a, b) => {
+                    const da = difficultyOrder[(a.difficulty || "middle").toLowerCase()] ?? 99;
+                    const db = difficultyOrder[(b.difficulty || "middle").toLowerCase()] ?? 99;
+                    if (da !== db) return da - db;
+                    return (a.name ?? a.slug).localeCompare(b.name ?? b.slug);
+                  })
                   .map((scenario) => (
                     <div
                       key={scenario.id}
@@ -752,9 +778,14 @@ function App() {
                     <div>
                       <p className="label">Coding</p>
                       <h5>{currentTask.title}</h5>
-                      <p className="muted">
-                        {currentTask.description_for_candidate || currentTask.description || "Напишите решение ниже"}
-                      </p>
+                      <div className="muted markdown">
+                        <ReactMarkdown>
+                          {currentTask.statement_md ||
+                            currentTask.description_for_candidate ||
+                            currentTask.description ||
+                            "Напишите решение ниже"}
+                        </ReactMarkdown>
+                      </div>
                     </div>
                     <div style={{ display: "flex", gap: 8 }}>
                       <button className="ghost" onClick={() => submitCode(currentTask)} disabled={!sessionId}>
