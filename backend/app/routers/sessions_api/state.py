@@ -127,12 +127,49 @@ def _theory_summary_text(session: models.Session) -> str:
     maximum = 0.0
     for t in theory:
         tid = t.get("id")
-        max_pts = float(t.get("max_points") or 0)
-        maximum += max_pts
+        maximum += 10.0
         earned += float(scores.get(tid, 0))
 
-    # если max_points не заполнены, всё равно покажем сколько заданий оценено
     if maximum <= 0:
         return f"Теория завершена. Оценено заданий: {sum(1 for t in theory if t.get('id') in scores)}/{len(theory)}."
     return f"Теория завершена. Итог: {earned:g}/{maximum:g}."
+
+def advance_task_if_needed(session: models.Session, last_user_text: str) -> bool:
+    """
+    Если кандидат написал "Следующее" и текущая задача уже оценена —
+    двигаем current_task_id на следующий task в сценарии.
+    Возвращаем True если был переход.
+    """
+    if not last_user_text:
+        return False
+
+    if last_user_text.strip().lower() != "следующее":
+        return False
+
+    tasks = session.scenario.tasks or []
+    if not tasks:
+        return False
+
+    scores = session.scores or {}
+
+    # определяем текущую задачу
+    current_id = session.current_task_id or tasks[0].get("id")
+    if not current_id:
+        return False
+
+    # если текущая ещё НЕ оценена — не даём перейти
+    if current_id not in scores:
+        return False
+
+    # ищем следующую
+    ids = [t.get("id") for t in tasks if t.get("id")]
+    if current_id not in ids:
+        return False
+
+    idx = ids.index(current_id)
+    if idx + 1 >= len(ids):
+        return False  # уже конец
+
+    session.current_task_id = ids[idx + 1]
+    return True
 

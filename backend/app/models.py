@@ -120,6 +120,9 @@ class Score(Base):
     task_id: Mapped[str] = mapped_column(String(128), nullable=False)
     points: Mapped[float] = mapped_column(Float, nullable=False)
     comment: Mapped[Optional[str]] = mapped_column(Text)
+    is_final: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    question_index: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    score_type: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     session: Mapped["Session"] = relationship("Session", back_populates="score_entries")

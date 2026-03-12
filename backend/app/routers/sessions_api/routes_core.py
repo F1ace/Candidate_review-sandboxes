@@ -10,6 +10,7 @@ from .practice import _practice_agent_review
 from .router import router
 from .schemas import PracticeCodeRequest, PracticeSqlRequest
 from .state import _get_task_by_id
+from .state import advance_task_if_needed
 @router.post("/", response_model=schemas.SessionOut, status_code=status.HTTP_201_CREATED)
 @router.post("", response_model=schemas.SessionOut, status_code=status.HTTP_201_CREATED)
 def create_session(payload: schemas.SessionCreate, db: Session = Depends(get_db)):
@@ -52,6 +53,16 @@ def post_message(session_id: str, payload: schemas.MessageCreate, db: Session = 
         raise HTTPException(status_code=404, detail="Session not found")
     message = models.Message(session_id=session_id, **payload.model_dump())
     db.add(message)
+    # <-- ВАЖНО: если кандидат написал "Следующее", пробуем перевести задачу
+    if payload.sender == "candidate":
+        if advance_task_if_needed(session, payload.text):
+            # можно добавить системное сообщение для ясности
+            db.add(models.Message(
+                session_id=session_id,
+                sender="system",
+                text=f"Переход к следующему заданию: {session.current_task_id}",
+                task_id=session.current_task_id,
+            ))
     db.commit()
     db.refresh(message)
     return message
@@ -61,19 +72,62 @@ def score_task(session_id: str, payload: schemas.ScoreCreate, db: Session = Depe
     session = db.get(models.Session, session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
+
     scenario = session.scenario
     task = _get_task_by_id(scenario, payload.task_id)
     if not task:
         raise HTTPException(status_code=400, detail="Task not found in scenario")
-    max_points = task.get("max_points", 0)
-    if payload.points < 0 or payload.points > max_points:
+
+    task_type = task.get("type")
+    max_points = int(task.get("max_points", 0) or 0)
+    points = float(int(round(float(payload.points))))
+    comment = (payload.comment or "").strip()
+
+    if not comment:
+        raise HTTPException(status_code=400, detail="comment is required and must be non-empty")
+
+    if task_type == "theory":
+        if points < 1 or points > 10:
+            raise HTTPException(status_code=400, detail="Theory score should be within [1, 10]")
+
+        score = models.Score(
+            session_id=session_id,
+            task_id=payload.task_id,
+            points=points,
+            comment=comment,
+            is_final=payload.is_final,
+            question_index=payload.question_index,
+            score_type="theory_final" if payload.is_final else "theory_intermediate",
+        )
+        db.add(score)
+
+        if payload.is_final:
+            current_scores = session.scores or {}
+            session.scores = {**current_scores, payload.task_id: points}
+
+        db.commit()
+        db.refresh(score)
+        return score
+
+    if points < 0 or points > max_points:
         raise HTTPException(
             status_code=400,
             detail=f"Points should be within [0, {max_points}]",
         )
-    score = models.Score(session_id=session_id, **payload.model_dump())
+
+    score = models.Score(
+        session_id=session_id,
+        task_id=payload.task_id,
+        points=points,
+        comment=comment,
+        is_final=True,
+        question_index=None,
+        score_type="practice",
+    )
+
     current_scores = session.scores or {}
-    session.scores = {**current_scores, payload.task_id: payload.points}
+    session.scores = {**current_scores, payload.task_id: points}
+
     db.add(score)
     db.commit()
     db.refresh(score)

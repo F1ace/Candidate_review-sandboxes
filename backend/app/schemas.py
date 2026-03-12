@@ -174,6 +174,8 @@ class ScoreCreate(BaseModel):
     task_id: str
     points: float
     comment: Optional[str] = None
+    is_final: bool = True
+    question_index: Optional[int] = None
 
 
 class ScoreOut(ScoreCreate):

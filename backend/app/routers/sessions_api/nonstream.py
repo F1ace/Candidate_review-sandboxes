@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from ... import models
 from ...services.lm_client import lm_client
-from .dispatch import _dispatch_tool_call
+from .dispatch import _dispatch_tool_call, _aggregate_theory_intermediate_scores
 from .practice import _score_feedback
 from .prompting import _build_system_prompt, _extract_inline_tool_call
 from .state import (
@@ -18,6 +18,41 @@ from .state import (
     _theory_summary_text,
 )
 from .tools import TOOLS
+
+def _is_score_task_error(result: dict) -> bool:
+    if not isinstance(result, dict):
+        return True
+    if result.get("ok") is False:
+        return True
+    if "error" in result and result["error"]:
+        return True
+    return False
+
+def _looks_like_tool_dump(text: str) -> bool:
+    t = (text or "").strip()
+    if not t:
+        return True
+    low = t.lower()
+    if low.startswith("score_task"):
+        return True
+    if "score_task" in low and "task_id" in low and "points" in low:
+        return True
+    if t.startswith("{") and t.endswith("}") and ("task_id" in low and "points" in low):
+        return True
+    return False
+
+
+def _human_tool_error(result: dict) -> str:
+    err = ""
+    if isinstance(result, dict):
+        err = result.get("error") or ""
+    if not err:
+        err = "неизвестная ошибка"
+    return (
+        "Не удалось записать оценку (score_task не принят системой).\n"
+        f"Причина: {err}"
+    )
+
 def call_model(session_id: str, db: Session):
     """Non-streaming call (fallback)."""
     session = db.get(models.Session, session_id)
@@ -70,23 +105,56 @@ def call_model(session_id: str, db: Session):
     tool_results_db: list[models.Message] = []
     last_score_result: dict[str, Any] | None = None
     final_msg = assistant_msg
-    if tool_calls:
+
+    MAX_SCORE_RETRIES = 2
+    retries_left = MAX_SCORE_RETRIES
+
+    while tool_calls:
         tool_messages = []
+        score_task_failed = False
+        score_task_error_text = ""
+        score_task_max_points = None
+
         for tc in tool_calls:
             result = _dispatch_tool_call(session, tc, db)
-            if tc["function"]["name"] == "score_task":
+
+            fname = tc["function"]["name"]
+            if fname == "score_task":
                 last_score_result = result
-            # --- theory->practice transition for NON-stream chat too ---
+
+                # достанем max_points текущей задачи, чтобы подсказать модели допустимый диапазон
+                try:
+                    args_sc = json.loads(tc["function"].get("arguments", "{}"))
+                except Exception:
+                    args_sc = {}
+                task_id_scored = args_sc.get("task_id")
+                task_obj = _get_task_by_id(session.scenario, task_id_scored) if task_id_scored else None
+                if task_obj:
+                    score_task_max_points = task_obj.get("max_points")
+
+                if _is_score_task_error(result):
+                    score_task_failed = True
+                    score_task_error_text = result.get("error") or str(result)
+
+            # theory -> final summary transition for non-stream
             try:
                 args_sc = json.loads(tc["function"].get("arguments", "{}"))
             except Exception:
                 args_sc = {}
-            task_id_scored = args_sc.get("task_id")
-            task_obj = _get_task_by_id(session.scenario, task_id_scored) if task_id_scored else None
+            task_id_for_db = args_sc.get("task_id")
 
-            if task_obj and task_obj.get("type") == "theory" and _theory_is_complete(session):
+            task_obj2 = _get_task_by_id(session.scenario, task_id_for_db) if task_id_for_db else None
+            if (
+                task_obj2
+                and task_obj2.get("type") == "theory"
+                and isinstance(result, dict)
+                and result.get("ok") is True
+                and result.get("is_final") is True
+                and _theory_is_complete(session)
+            ):
                 summary = _theory_summary_text(session)
                 practice_task = _first_practice_task(session.scenario)
+                aggregated = _aggregate_theory_intermediate_scores(session, db, task_id_for_db)
 
                 practice_title = practice_task.get("title") if practice_task else ""
                 practice_id = practice_task.get("id") if practice_task else ""
@@ -100,18 +168,27 @@ def call_model(session_id: str, db: Session):
                         or ""
                     )
 
-                messages.append({
-                    "role": "system",
-                    "content": (
-                        "ТЕОРИЯ ЗАВЕРШЕНА.\n"
-                        "Нужно: 1) кратко сообщить итог теории, 2) объявить переход к практике, "
-                        "3) сказать, что пользователю нужно перейти на вкладку «Практика», вставить решение в редактор и нажать «Проверить моделью», "
-                        "4) назвать следующее практическое задание.\n\n"
-                        f"{summary}\n"
-                        f"Следующее практическое задание: {practice_id} {practice_title} (тип: {practice_type}).\n"
-                        f"Описание: {practice_desc}\n"
-                    )
-                })
+                messages.append(
+                    {
+                        "role": "system",
+                        "content": (
+                            "ТЕОРИЯ ЗАВЕРШЕНА.\n"
+                            "Промежуточные оценки и комментарии по вопросам уже сохранены системой.\n"
+                            f"Количество промежуточных оценок: {aggregated['count']}\n"
+                            f"Средняя промежуточная оценка: {aggregated['avg_points']}/10\n"
+                            f"Промежуточные комментарии: {json.dumps(aggregated['comments'], ensure_ascii=False)}\n\n"
+                            "Сейчас нужно написать пользователю ИТОГОВЫЙ человеко-понятный разбор по теоретическому блоку.\n"
+                            "Не перечисляй сырые промежуточные оценки по каждому вопросу.\n"
+                            "Нужно: 1) кратко подвести итог, 2) отметить сильные стороны, 3) назвать зоны роста, "
+                            "4) показать финальную оценку по шкале 1..10, 5) сообщить, что продолжение интервью будет происходить во вкладке практического задания.\n\n"
+                            f"{summary}\n"
+                            f"Следующее практическое задание: {practice_id} {practice_title} (тип: {practice_type}).\n"
+                            f"Описание: {practice_desc}\n"
+                        ),
+                    }
+                )
+
+            # tool result -> messages (как было)
             tool_messages.append(
                 {
                     "role": "tool",
@@ -119,67 +196,89 @@ def call_model(session_id: str, db: Session):
                     "content": json.dumps(result, ensure_ascii=False),
                 }
             )
-            try:
-                args = json.loads(tc["function"].get("arguments", "{}"))
-            except Exception:
-                args = {}
-            task_id_for_db = args.get("task_id")
 
             tool_results_db.append(
                 models.Message(
                     session_id=session_id,
                     sender="tool",
-                    text=f"{tc['function']['name']} -> {result}",
+                    text=f"{fname} -> {result}",
                     task_id=task_id_for_db,
                 )
             )
 
+        # приклеиваем tool-ответы в историю
         messages.extend(tool_messages)
-        try:
-            second_resp = lm_client.chat(messages, tools=TOOLS)
-            final_msg = second_resp["choices"][0]["message"]
-            # --- Fallback 2: модель могла "напечатать" tool-call текстом во втором ответе ---
-            if not (final_msg.get("tool_calls") or []):
-                inline = _extract_inline_tool_call(final_msg.get("content") or "")
+
+        # Если score_task упал — заставляем модель повторить score_task корректно
+        if score_task_failed and retries_left > 0:
+            retries_left -= 1
+
+            max_pts_text = ""
+            if score_task_max_points is not None:
+                max_pts_text = f" (max_points={score_task_max_points})"
+
+            messages.append({
+                "role": "system",
+                "content": (
+                    "score_task НЕ был принят системой.\n"
+                    f"Причина: {score_task_error_text}{max_pts_text}\n"
+                    "Требование: вызови score_task ещё раз с points строго в диапазоне [0, max_points] "
+                    "и с непустым comment. НЕ пиши финальный текст пользователю, пока score_task не пройдет успешно."
+                )
+            })
+
+            # просим модель снова сделать tool_calls
+            retry_resp = lm_client.chat(messages, tools=TOOLS)
+            final_msg = retry_resp["choices"][0]["message"]
+            tool_calls = final_msg.get("tool_calls")
+
+            # если она вместо tool_calls напечатала inline — используем твой механизм
+            if not tool_calls:
+                content = final_msg.get("content") or ""
+                inline = _extract_inline_tool_call(content)
                 if inline:
                     tool_name, args = inline
-                    # выполнение tool вручную, как если бы это был tool_call
-                    fake_tc = {
-                        "id": "inline_toolcall_2",
+                    tool_calls = [{
+                        "id": "inline_toolcall_retry",
                         "type": "function",
                         "function": {
                             "name": tool_name,
                             "arguments": json.dumps(args, ensure_ascii=False),
                         },
-                    }
-                    result = _dispatch_tool_call(session, fake_tc, db)
+                    }]
+                    final_msg["content"] = None
 
-                    # логирование tool в БД
-                    db.add(models.Message(
-                        session_id=session_id,
-                        sender="tool",
-                        text=f"{tool_name} -> {result}",
-                        task_id=args.get("task_id"),
-                    ))
-                    db.commit()
+            messages.append(final_msg)
+            continue
 
-                    # добавление tool-ответ в messages и запрос модель ещё раз
-                    messages.append({"role": "assistant", "content": None})
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": "inline_toolcall_2",
-                        "content": json.dumps(result, ensure_ascii=False),
-                    })
+        # Если score_task успешен (или score_task не было) — получаем финальное сообщение без tools
+        final_resp = lm_client.chat(messages, tools=TOOLS)
+        final_msg = final_resp["choices"][0]["message"]
+        tool_calls = final_msg.get("tool_calls")
 
-                    third_resp = lm_client.chat(messages, tools=TOOLS)
-                    final_msg = third_resp["choices"][0]["message"]
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=500, detail=f"LM request failed after tool calls: {exc}") from exc
-        if (not final_msg.get("content")) and last_score_result:
-            final_msg["content"] = _score_feedback(last_score_result)
+        # если внезапно опять tool_calls — цикл продолжит и обработает
+        if not tool_calls:
+            break
+
+    # Если модель молчит после score_task — подставляем fallback feedback
+    if (not final_msg.get("content")) and last_score_result:
+        final_msg["content"] = _score_feedback(last_score_result)
 
     for tm in tool_results_db:
         db.add(tm)
+    final_text = final_msg.get("content") or ""
+
+    if last_score_result and _looks_like_tool_dump(final_text):
+        if isinstance(last_score_result, dict) and last_score_result.get("ok") is True:
+            final_text = _score_feedback(last_score_result)
+        else:
+            final_text = _human_tool_error(last_score_result)
+    final_msg["content"] = final_text
+
+    if isinstance(last_score_result, dict) and last_score_result.get("ok") is True:
+        if not final_text or _looks_like_tool_dump(final_text):
+            final_text = _score_feedback(last_score_result)
+
     db.add(
         models.Message(
             session_id=session_id,

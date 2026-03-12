@@ -123,6 +123,7 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [currentTaskIndex, setCurrentTaskIndex] = useState(0);
+  const [sessionScores, setSessionScores] = useState<Record<string, number>>({});
   const [sessionMode, setSessionMode] = useState<"theory" | "practice">("theory");
 
   const selectedScenarioObj = useMemo(
@@ -132,18 +133,20 @@ function App() {
 
   const orderedTasks = selectedScenarioObj?.tasks || [];
   const currentTask = orderedTasks[currentTaskIndex] || null;
+  const theoryTasks = useMemo(
+  () => orderedTasks.filter((t) => t.type === "theory"),
+  [orderedTasks],
+);
 
-  const lastTheoryIndex = useMemo(() => {
-  // индекс последнего задания типа "theory"
-  return orderedTasks.map((t) => t.type).lastIndexOf("theory");
-  }, [orderedTasks]);
+const theoryCompleted = useMemo(() => {
+  if (!theoryTasks.length) return false;
+  return theoryTasks.every((t) => sessionScores[t.id] !== undefined);
+}, [theoryTasks, sessionScores]);
 
   const firstPracticeIndex = useMemo(() => {
   // индекс первого задания НЕ theory (coding/sql)
   return orderedTasks.findIndex((t) => t.type !== "theory");
   }, [orderedTasks]);
-
-  const isOnLastTheory = lastTheoryIndex >= 0 && currentTaskIndex === lastTheoryIndex;
 
   useEffect(() => {
     const bootstrap = async () => {
@@ -345,6 +348,7 @@ function App() {
         pushMessage({ sender: "model", text: accumulated });
         setStreamingReply("");
       }
+      await refreshSessionState(activeId);
     }
   };
 
@@ -534,23 +538,11 @@ function App() {
     }
   };
 
-  const goNextTask = () => {
-    // если мы в теории и дошли до последнего теоретического задания
-    if (sessionMode === "theory" && isOnLastTheory) {
-      // можно сразу перейти в практику автоматически:
-      setSessionMode("practice");
-
-      // и перекинуть на первое практическое задание (coding/sql)
-      if (firstPracticeIndex >= 0) {
-        setCurrentTaskIndex(firstPracticeIndex);
-      }
-      return;
-    }
-
-    if (currentTaskIndex < orderedTasks.length - 1) {
-      setCurrentTaskIndex((i) => i + 1);
-    }
-  };
+const goNextTask = () => {
+  if (currentTaskIndex < orderedTasks.length - 1) {
+    setCurrentTaskIndex((i) => i + 1);
+  }
+};
 
   const goPrevTask = () => {
     if (currentTaskIndex > 0) {
@@ -570,6 +562,18 @@ function App() {
     junior: 0,
     middle: 1,
     senior: 2,
+  };
+
+  const refreshSessionState = async (sid?: string) => {
+    const activeId = sid ?? sessionId;
+    if (!activeId) return;
+
+    try {
+      const session = await fetchJson(`/sessions/${activeId}`);
+      setSessionScores(session.scores || {});
+    } catch (err) {
+      console.error("Не удалось обновить состояние сессии", err);
+    }
   };
 
   return (
@@ -715,13 +719,30 @@ function App() {
                     </div>
                   )}
                 </div>
+                {theoryCompleted && (
+                  <div className="message system">
+                    <div className="message-meta">
+                      <span>system</span>
+                    </div>
+                    <p>Теоретический этап завершён. Продолжайте во вкладке практического задания.</p>
+                  </div>
+                )}
                 <div className="composer">
                   <textarea
-                    placeholder="Ваш ответ или вопрос..."
+                    placeholder={
+                      theoryCompleted
+                        ? "Теоретический этап завершён. Перейдите к практике."
+                        : "Ваш ответ или вопрос..."
+                    }
                     value={chatInput}
                     onChange={(e) => setChatInput(e.target.value)}
+                    disabled={theoryCompleted}
                   />
-                  <button className="primary" onClick={sendChatMessage} disabled={!sessionId || streaming}>
+                  <button
+                    className="primary"
+                    onClick={sendChatMessage}
+                    disabled={!sessionId || streaming || theoryCompleted}
+                  >
                     Отправить
                   </button>
                 </div>

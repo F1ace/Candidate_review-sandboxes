@@ -36,9 +36,14 @@ def _practice_agent_review(
 def _score_feedback(result: dict[str, Any]) -> str:
     if not isinstance(result, dict):
         result = {}
+
     task_id = result.get("task_id") or ""
     pts = result.get("points")
-    comment = result.get("comment") or ""
-    pts_txt = f"{pts} балл(ов)" if pts is not None else "оценка выставлена"
-    return f"Оценка сохранена: {pts_txt} за {task_id}. Комментарий: {comment}. Нажмите «Следующее», чтобы перейти далее."
+    pts_txt = f"{int(pts)}/10" if pts is not None else "оценка выставлена"
+
+    return (
+        f"Теоретический этап завершён.\n\n"
+        f"**Оценка:** {pts_txt} за блок {task_id}.\n\n"
+        f"Продолжение интервью будет происходить во вкладке практического задания."
+    )
 

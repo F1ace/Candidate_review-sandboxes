@@ -66,15 +66,30 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "score_task",
-            "description": "Поставить баллы за задание кандидату.",
+            "description": "Поставить баллы за задание кандидату. Для theory можно сохранять промежуточные оценки после каждого вопроса и одну финальную оценку после завершения всего блока.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "task_id": {"type": "string"},
-                    "points": {"type": "number"},
-                    "comment": {"type": "string"},
+                    "points": {
+                        "type": "number",
+                        "multipleOf": 1,
+                        "description": "Оценка должна быть целым числом, но кодироваться как число с плавающей точкой со значением .0 (например, 7.0). Для theory используй шкалу 1..10. Для coding/sql — диапазон 0..max_points."
+                    },
+                    "comment": {
+                        "type": "string",
+                        "description": "Непустой комментарий. Для theory после каждого вопроса — краткий комментарий к ответу на конкретный вопрос. Для финального вызова — итоговый комментарий по блоку."
+                    },
+                    "is_final": {
+                        "type": "boolean",
+                        "description": "Для theory: false после каждого отдельного вопроса, true только один раз после завершения всего блока. Для coding/sql оставляй true."
+                    },
+                    "question_index": {
+                        "type": "integer",
+                        "description": "Для theory: номер вопроса в блоке (1-based) для промежуточной оценки."
+                    },
                 },
-                "required": ["task_id", "points"],
+                "required": ["task_id", "points", "comment"],
             },
         },
     },
