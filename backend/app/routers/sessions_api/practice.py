@@ -1,3 +1,4 @@
+import re
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -33,6 +34,126 @@ def _practice_agent_review(
         logger=logger,
     )
 
+def _build_dynamic_growth_points(result: dict[str, Any]) -> list[str]:
+    aggregated = result.get("aggregated") or {}
+    comments = aggregated.get("comments") or []
+
+    if not isinstance(comments, list):
+        comments = []
+
+    comments = [str(c).strip() for c in comments if str(c).strip()]
+    if not comments:
+        return [
+            "Для усиления ответа стоит добавлять больше конкретных продуктовых примеров и чуть подробнее раскрывать практическую интерпретацию результатов эксперимента."
+        ]
+
+    text = " ".join(comments).lower()
+
+    growth_points: list[str] = []
+
+    def has_any(*phrases: str) -> bool:
+        return any(p.lower() in text for p in phrases)
+
+    if has_any(
+        "не упоминает конкретные примеры",
+        "не приводит конкретный пример",
+        "без конкретных примеров",
+        "можно добавить пример",
+        "стоило бы добавить пример",
+    ):
+        growth_points.append(
+            "Добавляйте больше конкретных продуктовых примеров: как именно метрика выбирается в A/B-тесте, какие guardrail-метрики важны и как решение влияет на продукт."
+        )
+
+    if has_any(
+        "упущены детали",
+        "не раскрыты детали",
+        "не хватает деталей",
+        "можно подробнее",
+        "стоит подробнее",
+        "раскрыто не полностью",
+    ):
+        growth_points.append(
+            "Старайтесь глубже раскрывать детали ответа: не только давать определение, но и пояснять механику, ограничения метода и типичные ошибки интерпретации."
+        )
+
+    if has_any(
+        "интерпретац",
+        "практическ",
+        "ошибках при интерпретации",
+        "порог p-value",
+        "не объясняет",
+    ):
+        growth_points.append(
+            "Усильте практическую интерпретацию: что означает метрика или статистический результат для бизнеса, какие выводы можно сделать и какие решения принимать дальше."
+        )
+
+    if has_any(
+        "не упоминает порог",
+        "не приводит порог",
+        "не указан порог",
+        "хи-квадрат",
+        "проверки",
+    ):
+        growth_points.append(
+            "В вопросах про эксперименты полезно точнее проговаривать критерии проверки гипотез: какой тест используется, какой порог значимости берётся и как интерпретировать результат проверки."
+        )
+
+    if has_any(
+        "не полностью раскрывает",
+        "можно усилить",
+        "можно было бы добавить",
+        "не охватывает",
+    ):
+        growth_points.append(
+            "Старайтесь структурировать ответ по схеме: определение → зачем метод нужен → как применяется на практике → ограничения и риски."
+        )
+
+    # Убираем дубли
+    unique_growth_points: list[str] = []
+    seen = set()
+    for item in growth_points:
+        key = item.strip().lower()
+        if key and key not in seen:
+            seen.add(key)
+            unique_growth_points.append(item)
+
+    if unique_growth_points:
+        return unique_growth_points[:3]
+
+    # Фолбэк: пытаемся извлечь хвосты после маркеров из comments
+    extracted: list[str] = []
+    patterns = [
+        r"(?:можно было бы добавить[^.?!]*[.?!])",
+        r"(?:стоило бы добавить[^.?!]*[.?!])",
+        r"(?:не хватает[^.?!]*[.?!])",
+        r"(?:упущены[^.?!]*[.?!])",
+        r"(?:не раскрыты[^.?!]*[.?!])",
+    ]
+
+    for comment in comments:
+        for pattern in patterns:
+            for m in re.findall(pattern, comment, flags=re.IGNORECASE):
+                cleaned = m.strip()
+                if cleaned:
+                    extracted.append(cleaned)
+
+    # Убираем дубли
+    unique_extracted: list[str] = []
+    seen = set()
+    for item in extracted:
+        key = item.strip().lower()
+        if key and key not in seen:
+            seen.add(key)
+            unique_extracted.append(item)
+
+    if unique_extracted:
+        return unique_extracted[:3]
+
+    return [
+        "Для усиления ответа полезно чаще связывать теорию с продуктовой практикой: приводить примеры, обозначать trade-off'ы и объяснять, как выводы из эксперимента влияют на решение команды."
+    ]
+
 def _score_feedback(result: dict[str, Any]) -> str:
     if not isinstance(result, dict):
         result = {}
@@ -41,41 +162,14 @@ def _score_feedback(result: dict[str, Any]) -> str:
     pts = result.get("points")
     pts_txt = f"{int(pts)}/10" if pts is not None else "оценка выставлена"
     comment = (result.get("comment") or "").strip()
-    is_final = result.get("is_final", True) is True
+
+    raw_is_final = result.get("is_final", True)
+    is_final = raw_is_final if isinstance(raw_is_final, bool) else str(raw_is_final).lower() == "true"
 
     if not is_final:
-        # Промежуточный score_task по теории не должен показываться как итог.
         return ""
 
-    # Пытаемся аккуратно выделить зоны роста из комментария.
-    growth_points: list[str] = []
-    strengths_text = comment
-
-    split_markers = [
-        "что можно улучшить",
-        "что стоило бы добавить",
-        "можно было бы добавить",
-        "можно было бы усилить",
-        "зоны роста",
-        "для усиления ответа",
-        "для более сильного ответа",
-    ]
-
-    lowered = comment.lower()
-    for marker in split_markers:
-        idx = lowered.find(marker)
-        if idx != -1:
-            strengths_text = comment[:idx].strip(" \n:-")
-            tail = comment[idx:].strip()
-            growth_points.append(tail)
-            break
-
-    # Если явного разделения нет — даём нейтральную зону роста.
-    if not growth_points:
-        growth_points.append(
-            "Для усиления ответа стоит добавлять больше конкретных продуктовых примеров, "
-            "явнее проговаривать trade-off'ы и чуть подробнее раскрывать практическую интерпретацию метрик и результатов эксперимента."
-        )
+    growth_points = _build_dynamic_growth_points(result)
 
     parts = [
         "Теоретический этап завершён.",
@@ -92,11 +186,11 @@ def _score_feedback(result: dict[str, Any]) -> str:
         "**2) Блок с комментарием по содержанию ответа**",
     ])
 
-    if strengths_text:
-        parts.append(strengths_text)
+    if comment:
+        parts.append(comment)
     else:
         parts.append(
-            "Ответы в целом показали понимание ключевых концепций блока и базовую уверенность в теории экспериментов."
+            "Ответы в целом показали понимание ключевых концепций теоретического блока."
         )
 
     parts.extend([
@@ -114,4 +208,3 @@ def _score_feedback(result: dict[str, Any]) -> str:
     ])
 
     return "\n".join(parts)
-

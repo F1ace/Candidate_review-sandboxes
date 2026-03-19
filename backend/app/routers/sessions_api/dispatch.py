@@ -297,19 +297,33 @@ def _apply_score(session: models.Session, args: dict[str, Any], db: Session) -> 
         return {"ok": False, "error": "comment is required and must be non-empty"}
 
     if task_type == "theory":
-        sentences = [s.strip() for s in re.split(r"[.!?]+", comment) if s.strip()]
-        has_terminal_punctuation = bool(re.search(r"[.!?]\s*$", comment))
-
-        # Разрешаем два нормальных сценария:
-        # 1) 2-3 законченных предложения;
-        # 2) одно длинное законченное предложение, если оно содержательное.
-        valid_two_plus_sentences = len(sentences) >= 2 and len(comment) >= 60
-        valid_one_long_sentence = len(sentences) == 1 and len(comment) >= 100 and has_terminal_punctuation
-
-        if not (valid_two_plus_sentences or valid_one_long_sentence):
+        # Достаточно мягкая, но полезная защита:
+        # - не пускаем слишком короткие комментарии;
+        # - не пускаем явно оборванные хвосты;
+        # - не требуем строго 2-3 предложения, потому что модель часто пишет
+        #   одно длинное, но нормальное законченное пояснение.
+        if len(comment) < 45:
             return {
                 "ok": False,
-                "error": "Theory comment must contain 2-3 complete sentences or one long complete sentence.",
+                "error": "Theory comment is too short; provide a fuller explanation.",
+            }
+
+        # Похоже на оборванный комментарий: заканчивается на служебный обрывок
+        # или на очень короткий хвост без знака завершения.
+        tail = comment[-12:].strip().lower()
+        suspicious_tail = (
+            len(comment.split()[-1]) <= 2
+            or tail in {"и", "а", "но", "что", "как", "к", "по", "в", "на", "с"}
+            or re.search(r"\b[а-яa-z]{1,2}$", comment.lower()) is not None
+        )
+
+        has_terminal_punctuation = bool(re.search(r"[.!?…]\s*$", comment))
+
+        # Если нет завершающего знака и при этом хвост выглядит оборванным — режем.
+        if suspicious_tail and not has_terminal_punctuation:
+            return {
+                "ok": False,
+                "error": "Theory comment looks truncated; provide a complete comment.",
             }
     if task_type in {"coding", "sql"}:
         comment_error = _validate_practice_comment(comment)

@@ -537,7 +537,7 @@ def stream_model(session_id: str):
                         f"- task_id={current_task_id}\n"
                         f"- question_index={pending_question_index}\n"
                         f"- сохранить корректный points\n"
-                        f"- comment должен содержать 2-3 ПОЛНЫХ законченных предложения по-русски, либо одно длинное законченное содержательное предложение\n"
+                        f"- comment должен быть содержательным, не слишком коротким и завершённым по смыслу; обычно это 2-3 предложения по-русски\n"
                         f"- не пиши обычный текст"
                     ),
                 })
@@ -660,12 +660,55 @@ def stream_model(session_id: str):
                     continue
 
         followup_messages = list(stream_messages)
-        followup_messages.append({
-            "role": "system",
-            "content": (
-                "Сейчас нужен обычный человеческий ответ интервьюера без tool-call и без технического текста."
-            ),
-        })
+
+        is_final_score_ok = bool(
+            isinstance(score_result_payload, dict)
+            and score_result_payload.get("ok") is True
+            and _as_bool(score_result_payload.get("is_final"), default=False)
+        )
+
+        if is_final_score_ok:
+            exact_points = score_result_payload.get("points")
+            exact_comment = (score_result_payload.get("comment") or "").strip()
+            aggregated = score_result_payload.get("aggregated") or {}
+            aggregated_comments = aggregated.get("comments") or []
+
+            aggregated_comments_text = "\n".join(
+                f"- {str(item).strip()}"
+                for item in aggregated_comments
+                if str(item).strip()
+            )
+
+            followup_messages.append({
+                "role": "system",
+                "content": (
+                    "Финальный score_task по теоретическому блоку уже успешно выполнен. "
+                    "Сейчас нужно написать ИТОГОВОЕ сообщение кандидату обычным текстом, без tool-call.\n\n"
+                    "Структура ответа должна быть строго такой:\n"
+                    "1) Короткая фраза о завершении теоретического этапа.\n"
+                    "2) Блок с оценкой.\n"
+                    "3) Блок с комментарием по содержанию ответов кандидата.\n"
+                    "4) Блок с зонами роста.\n"
+                    "5) Короткий блок о том, что дальше интервью продолжается в практической части.\n\n"
+                    "Критически важно:\n"
+                    f"- Используй ТОЧНО итоговую оценку: {exact_points}/10\n"
+                    "- Не придумывай другой балл.\n"
+                    "- Не печатай JSON.\n"
+                    "- Не печатай технический текст.\n"
+                    "- Не вызывай tools.\n"
+                    "- Пиши по-русски.\n"
+                    "- Формулируй зоны роста ИНДИВИДУАЛЬНО по ответам кандидата, а не статично.\n\n"
+                    f"Финальный комментарий из score_task:\n{exact_comment}\n\n"
+                    f"Промежуточные комментарии по вопросам:\n{aggregated_comments_text}"
+                ),
+            })
+        else:
+            followup_messages.append({
+                "role": "system",
+                "content": (
+                    "Сейчас нужен обычный человеческий ответ интервьюера без tool-call и без технического текста."
+                ),
+            })
 
         followup_resp = lm_client.chat(followup_messages, tools=None)
         final_assistant_msg = followup_resp["choices"][0]["message"]
@@ -706,25 +749,13 @@ def stream_model(session_id: str):
             # 2. Берём уже готовый assistant message после tool-этапа
             raw_final_text = _strip_think((post_tools_assistant_msg or {}).get("content") or "").strip()
 
-            is_final_score_ok = bool(
-                isinstance(score_result_payload, dict)
-                and score_result_payload.get("ok") is True
-                and _as_bool(score_result_payload.get("is_final"), default=False)
-            )
+            final_text = _sanitize_streamed_text(raw_final_text, score_result_payload).strip()
 
-            # 3. Для успешного финального theory score_task
-            # всегда показываем backend-сформированный итог из реального score_result_payload,
-            # чтобы текст в UI не расходился с фактически сохранённым баллом.
-            if is_final_score_ok:
-                final_text = (_score_feedback(score_result_payload) or "").strip()
-            else:
-                final_text = _sanitize_streamed_text(raw_final_text, score_result_payload).strip()
-
-                # 4. Если текста от модели нет, но есть результат score_task —
-                # подставляем понятный fallback
-                if not final_text and isinstance(score_result_payload, dict):
-                    if score_result_payload.get("ok") is not True:
-                        final_text = (_human_tool_error(score_result_payload) or "").strip()
+            if not final_text and isinstance(score_result_payload, dict):
+                if score_result_payload.get("ok") is True and _as_bool(score_result_payload.get("is_final"), default=False):
+                    final_text = (_score_feedback(score_result_payload) or "").strip()
+                elif score_result_payload.get("ok") is not True:
+                    final_text = (_human_tool_error(score_result_payload) or "").strip()
 
             # 5. Если после всего текста нет — не сохраняем пустое model-сообщение
             if final_text:
