@@ -63,6 +63,105 @@ def _autofinal_summary(state: CodeWorkflowState) -> str:
         summary += f"Оценка: {points}."
     return summary.strip()
 
+def _practice_fallback_feedback(state: CodeWorkflowState) -> str:
+    report = state.artifacts.get("run_report") or {}
+    score = state.artifacts.get("score_result") or {}
+
+    tests_total = int(report.get("tests_total") or 0)
+    tests_passed = int(report.get("tests_passed") or 0)
+    points = score.get("points", 0)
+    comment = (score.get("comment") or "").strip()
+
+    parts = [
+        f"Практическая проверка завершена.",
+        f"",
+        f"**Балл:** {points}",
+        f"**Тесты:** пройдено {tests_passed} из {tests_total}.",
+    ]
+
+    if comment:
+        parts.extend(["", comment])
+
+    return "\n".join(parts)
+
+def _practice_reply_from_score(state: CodeWorkflowState) -> str:
+    score = state.artifacts.get("score_result") or {}
+    points = score.get("points")
+    comment = (score.get("comment") or "").strip()
+
+    parts = ["Практическая проверка завершена."]
+
+    if points is not None:
+        parts.append(f"\nБалл: {points}/10")
+
+    if comment:
+        parts.append(f"\n{comment}")
+
+    return "\n".join(parts)
+
+def _score_task_first_call_prompt(state: CodeWorkflowState) -> str:
+    report = state.artifacts.get("run_report") or {}
+    tests_passed = int(report.get("tests_passed") or 0)
+    tests_total = int(report.get("tests_total") or 0)
+
+    failed_tests = []
+    for test in report.get("test_results") or []:
+        if not test.get("passed"):
+            name = test.get("name") or test.get("code") or "unknown test"
+            error = test.get("error") or "no details"
+            failed_tests.append(f"- {name}: {error}")
+
+    failed_tests_block = "\n".join(failed_tests) if failed_tests else "- нет"
+
+    return (
+        "Сейчас нужно СРАЗУ корректно вызвать score_task.\n"
+        f"points должен быть числом от 0 до {int(round(state.max_points or 0))}.\n"
+        "comment должен содержать РОВНО 4 заполненные секции:\n\n"
+        "Корректность: [что работает, что не работает, опираясь на sandbox]\n"
+        "Качество кода: [читаемость, структура, нейминг, обработка крайних случаев]\n"
+        "Сложность и эффективность: [краткая оценка или фраза, что для этой задачи это несущественно]\n"
+        "Что можно улучшить: [1-3 конкретных улучшения]\n\n"
+        f"Тесты песочницы: пройдено {tests_passed} из {tests_total}.\n"
+        "Упавшие тесты:\n"
+        f"{failed_tests_block}\n\n"
+        "Правила:\n"
+        "- все 4 секции обязательны;\n"
+        "- ни одна секция не должна быть пустой;\n"
+        "- не используй квадратные скобки в финальном тексте;\n"
+        "- points передай отдельно, не в comment;\n"
+        "- после этого вызови score_task."
+    )
+
+def _score_task_retry_template(state: CodeWorkflowState) -> str:
+    report = state.artifacts.get("run_report") or {}
+    tests_passed = int(report.get("tests_passed") or 0)
+    tests_total = int(report.get("tests_total") or 0)
+
+    failed_tests = []
+    for test in report.get("test_results") or []:
+        if not test.get("passed"):
+            name = test.get("name") or test.get("code") or "unknown test"
+            error = test.get("error") or "no details"
+            failed_tests.append(f"- {name}: {error}")
+
+    failed_tests_block = "\n".join(failed_tests) if failed_tests else "- нет"
+
+    return (
+        "Повтори вызов score_task и заполни comment полностью.\n"
+        "Используй СТРОГО такой формат comment:\n\n"
+        "Корректность: [объясни, что работает, а что не работает, опираясь на результаты sandbox]\n"
+        "Качество кода: [оцени читаемость, структуру, нейминг, крайние случаи]\n"
+        "Сложность и эффективность: [кратко оцени или явно напиши, что для этой задачи отдельный комментарий несущественен]\n"
+        "Что можно улучшить: [1-3 конкретных улучшения]\n\n"
+        f"Тесты песочницы: пройдено {tests_passed} из {tests_total}.\n"
+        "Упавшие тесты:\n"
+        f"{failed_tests_block}\n\n"
+        "Нельзя оставлять секции пустыми. "
+        "Нельзя использовать квадратные скобки в финальном comment. "
+        "points передай отдельно. "
+        "После этого снова вызови score_task."
+    )
+
 def run_practice_code_review(
     *,
     session: models.Session,
@@ -98,13 +197,39 @@ def run_practice_code_review(
         {"role": "system", "content": system_prompt},
         {"role": "system", "content": snapshot},
     ]
-    messages.extend(convert_history(history_db))
     messages.append(
         {
             "role": "system",
             "content": (
-                "PRACTICE_MODE. Candidate already submitted code. "
-                "You must finish the full tool pipeline and only then provide final feedback."
+                "PRACTICE_MODE.\n"
+                "Сейчас идет ТОЛЬКО проверка практического задания.\n"
+                "Теоретический блок, приветствие, вопросы интервью и переходы по theory полностью запрещены.\n"
+                "Если в истории есть старые сообщения theory, их нужно игнорировать.\n"
+                "Нельзя писать JSON, tool-dump, schema, служебные поля, raw tool result или текст вида score_task -> {...}.\n"
+                "Нельзя повторять вступление интервьюера.\n"
+                "Нужно проверить уже присланный код кандидата по задаче coding.\n"
+                "Обязательный порядок действий:\n"
+                "1) вызвать run_code\n"
+                "2) получить результат sandbox\n"
+                "3) вызвать score_task\n"
+                "4) только после этого дать финальный комментарий по практическому решению.\n"
+                "При выставлении оценки через score_task:\n"
+                "- опирайся на результаты sandbox, passrate и сам код кандидата;\n"
+                "- оцени не только прохождение тестов, но и качество решения;\n"
+                "- обязательно учитывай, какие именно тесты упали и какие ошибки вернул sandbox;\n"
+                "- если несколько тестов падают по одной и той же причине, укажи предполагаемый дефект в логике кандидата;\n"
+                "- учитывай читаемость, структуру, нейминг и обработку крайних случаев;\n"
+                "- если это уместно, кратко оцени сложность и эффективность;\n"
+                "- не вставляй шаблонные фразы, квадратные скобки и текст-заглушки;\n"
+                "- каждый раздел комментария должен быть заполнен осмысленным текстом.\n"
+                "Финальный ответ должен быть обычным текстом для кандидата.\n"
+                "Финальный ответ обязан содержать:\n"
+                "- итоговый балл,\n"
+                "- краткий вывод по корректности решения,\n"
+                "- комментарий по качеству кода,\n"
+                "- при необходимости замечание по сложности/эффективности,\n"
+                "- 1–3 конкретных улучшения.\n"
+                "Не начинай теорию заново. Не выводи служебные размышления."
             ),
         }
     )
@@ -129,7 +254,6 @@ def run_practice_code_review(
         resp = chat(messages, tools=toolset)
 
         assistant_msg = resp["choices"][0]["message"]
-        messages.append(assistant_msg)
 
         tool_calls = assistant_msg.get("tool_calls") or []
         if not tool_calls:
@@ -148,6 +272,9 @@ def run_practice_code_review(
                     }
                 ]
                 assistant_msg["content"] = None
+                assistant_msg["tool_calls"] = tool_calls
+
+        messages.append(assistant_msg)
 
         if not tool_calls:
             content = (assistant_msg.get("content") or "").strip()
@@ -244,13 +371,27 @@ def run_practice_code_review(
             ok, reason = state.mark_result(name, result if isinstance(result, dict) else {"error": "non-dict tool result"})
             if not ok:
                 retry_tools = True
+
+                retry_message = (
+                    f"Инструмент {name} вернул некорректный результат: {reason}. "
+                    f"Повтори шаг {_next_step_hint(next_tool)}."
+                )
+
+                if name == "score_task" and reason:
+                    if (
+                        "Practice comment does not match required template" in reason
+                        or "contains placeholders or template instructions" in reason
+                        or "Practice comment has empty sections" in reason
+                    ):
+                        retry_message = (
+                            f"Инструмент {name} вернул некорректный результат: {reason}.\n\n"
+                            f"{_score_task_retry_template(state)}"
+                        )
+
                 messages.append(
                     {
                         "role": "user",
-                        "content": (
-                            f"Инструмент {name} вернул некорректный результат: {reason}. "
-                            f"Повтори шаг {_next_step_hint(next_tool)}."
-                        ),
+                        "content": retry_message,
                     }
                 )
 
@@ -266,6 +407,19 @@ def run_practice_code_review(
             continue
 
         messages.extend(tool_messages)
+
+        if (
+            state.next_required_tool() == "score_task"
+            and state.artifacts.get("run_report")
+            and not state.artifacts.get("score_result")
+        ):
+            messages.append(
+                {
+                    "role": "user",
+                    "content": _score_task_first_call_prompt(state),
+                }
+            )
+            continue
 
     if final_msg is None and not state.is_complete():
         auto_error: str | None = None
@@ -321,8 +475,24 @@ def run_practice_code_review(
             "content": _autofinal_summary(state),
         }
 
-    content = final_msg.get("content") or ""
-    db.add(models.Message(session_id=session.id, sender="system", text=content, task_id=task_id))
+    content = (final_msg.get("content") or "").strip()
+
+    if (
+        not content
+        or content.lstrip().startswith("{")
+        or "score_task ->" in content
+        or "Theory block is not finished yet" in content
+        or "Вопрос 1/" in content
+        or "Сегодня мы" in content
+        or content.startswith("Проверка завершена. Passrate:")
+    ):
+        content = _practice_fallback_feedback(state)
+
+    score_result = state.artifacts.get("score_result") or {}
+    if score_result and score_result.get("comment"):
+        content = _practice_reply_from_score(state)
+
+    db.add(models.Message(session_id=session.id, sender="model", text=content, task_id=task_id))
     db.commit()
 
     return {"reply": content, "tool_results": tool_results_for_ui}

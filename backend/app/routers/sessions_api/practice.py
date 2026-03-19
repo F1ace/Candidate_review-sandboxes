@@ -40,10 +40,78 @@ def _score_feedback(result: dict[str, Any]) -> str:
     task_id = result.get("task_id") or ""
     pts = result.get("points")
     pts_txt = f"{int(pts)}/10" if pts is not None else "оценка выставлена"
+    comment = (result.get("comment") or "").strip()
+    is_final = result.get("is_final", True) is True
 
-    return (
-        f"Теоретический этап завершён.\n\n"
-        f"**Оценка:** {pts_txt} за блок {task_id}.\n\n"
-        f"Продолжение интервью будет происходить во вкладке практического задания."
-    )
+    if not is_final:
+        # Промежуточный score_task по теории не должен показываться как итог.
+        return ""
+
+    # Пытаемся аккуратно выделить зоны роста из комментария.
+    growth_points: list[str] = []
+    strengths_text = comment
+
+    split_markers = [
+        "что можно улучшить",
+        "что стоило бы добавить",
+        "можно было бы добавить",
+        "можно было бы усилить",
+        "зоны роста",
+        "для усиления ответа",
+        "для более сильного ответа",
+    ]
+
+    lowered = comment.lower()
+    for marker in split_markers:
+        idx = lowered.find(marker)
+        if idx != -1:
+            strengths_text = comment[:idx].strip(" \n:-")
+            tail = comment[idx:].strip()
+            growth_points.append(tail)
+            break
+
+    # Если явного разделения нет — даём нейтральную зону роста.
+    if not growth_points:
+        growth_points.append(
+            "Для усиления ответа стоит добавлять больше конкретных продуктовых примеров, "
+            "явнее проговаривать trade-off'ы и чуть подробнее раскрывать практическую интерпретацию метрик и результатов эксперимента."
+        )
+
+    parts = [
+        "Теоретический этап завершён.",
+        "",
+        "**1) Блок с оценкой**",
+        f"- Итоговая оценка за теоретический блок: **{pts_txt}**.",
+    ]
+
+    if task_id:
+        parts.append(f"- Идентификатор блока: `{task_id}`.")
+
+    parts.extend([
+        "",
+        "**2) Блок с комментарием по содержанию ответа**",
+    ])
+
+    if strengths_text:
+        parts.append(strengths_text)
+    else:
+        parts.append(
+            "Ответы в целом показали понимание ключевых концепций блока и базовую уверенность в теории экспериментов."
+        )
+
+    parts.extend([
+        "",
+        "**3) Блок с зонами роста**",
+    ])
+
+    for item in growth_points:
+        parts.append(f"- {item}")
+
+    parts.extend([
+        "",
+        "**Что дальше**",
+        "Интервью продолжается в блоке с практическим заданием.",
+    ])
+
+    return "\n".join(parts)
 

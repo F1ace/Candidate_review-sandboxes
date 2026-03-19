@@ -211,15 +211,7 @@ class WebSearchRequest(BaseModel):
 class CodeSubmission(BaseModel):
     code: str
     language: str
-    tests_id: str
-
 
 class SqlSubmission(BaseModel):
     query: str
     sql_scenario_id: str
-
-
-class NotifyCodeResult(BaseModel):
-    task_id: str
-    success: bool
-    details: Optional[str] = None

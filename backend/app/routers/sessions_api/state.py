@@ -60,15 +60,43 @@ def _episodic_memory(history: list[models.Message]) -> list[str]:
     return events[-30:]
 
 def _convert_history(messages: list[models.Message]) -> list[dict[str, Any]]:
-    converted = []
+    converted: list[dict[str, Any]] = []
+
     for msg in messages:
         if msg.sender == "candidate":
-            role = "user"
-        elif msg.sender == "model":
-            role = "assistant"
-        else:
-            role = "system"
-        converted.append({"role": role, "content": msg.text})
+            converted.append({"role": "user", "content": msg.text})
+            continue
+
+        if msg.sender == "model":
+            converted.append({"role": "assistant", "content": msg.text})
+            continue
+
+        # Сырые tool-логи НЕ возвращаем модели обратно.
+        # Они искажают поведение и провоцируют псевдо-вызовы tools.
+        if msg.sender == "tool":
+            continue
+
+        # system-сообщения оставляем только если они реально нужны модели,
+        # а не являются техническим логом.
+        text = (msg.text or "").strip()
+        if not text:
+            continue
+
+        technical_prefixes = (
+            "Code execution result for ",
+            "run_code ->",
+            "run_sql ->",
+            "score_task ->",
+            "Проверка завершена.",
+            "Проверка не завершена автоматически.",
+            "Переход к следующему заданию:",
+            "Ошибка сервиса LM Studio:",
+        )
+        if text.startswith(technical_prefixes):
+            continue
+
+        converted.append({"role": "system", "content": text})
+
     return converted
 
 def _conversation_snapshot(session: models.Session, history: list[models.Message]) -> str:

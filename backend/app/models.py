@@ -80,6 +80,11 @@ class Scenario(Base):
     rag_corpus: Mapped[Optional["RagCorpus"]] = relationship("RagCorpus", back_populates="scenarios")
     sql_scenario: Mapped[Optional["SqlScenario"]] = relationship("SqlScenario", back_populates="scenarios")
     sessions: Mapped[list["Session"]] = relationship("Session", back_populates="scenario")
+    task_items: Mapped[list["Task"]] = relationship(
+    "Task",
+    back_populates="scenario",
+    cascade="all, delete-orphan"
+)
 
 
 class Session(Base):
@@ -126,3 +131,71 @@ class Score(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     session: Mapped["Session"] = relationship("Session", back_populates="score_entries")
+
+class Task(Base):
+    __tablename__ = "tasks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    scenario_id: Mapped[int] = mapped_column(ForeignKey("scenarios.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    external_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    task_type: Mapped[str] = mapped_column(String(50), nullable=False)   # theory | coding | sql
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    description_for_candidate: Mapped[Optional[str]] = mapped_column(Text)
+    max_points: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    order_index: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    language: Mapped[Optional[str]] = mapped_column(String(50))
+    sql_scenario_ref: Mapped[Optional[str]] = mapped_column(String(128))
+    starter_code: Mapped[Optional[str]] = mapped_column(Text)
+    statement_md: Mapped[Optional[str]] = mapped_column(Text)
+
+    related_topics: Mapped[Optional[list[str]]] = mapped_column(JSON)
+    questions: Mapped[Optional[list[dict[str, Any]]]] = mapped_column(JSON)
+    extra_config: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
+
+    scenario: Mapped["Scenario"] = relationship("Scenario", back_populates="task_items")
+
+    test_cases: Mapped[list["TestCase"]] = relationship(
+        "TestCase",
+        secondary="task_test_cases",
+        back_populates="tasks",
+    )
+
+class TestCase(Base):
+    __tablename__ = "test_cases"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    code: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text)
+
+    language: Mapped[str] = mapped_column(String(50), default="python", nullable=False)
+    input_data: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
+    expected_output: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
+    checker_source: Mapped[Optional[str]] = mapped_column(Text)
+
+    is_public: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_hidden: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+    tasks: Mapped[list["Task"]] = relationship(
+        "Task",
+        secondary="task_test_cases",
+        back_populates="test_cases",
+    )
+
+class TaskTestCase(Base):
+    __tablename__ = "task_test_cases"
+    __table_args__ = (
+        UniqueConstraint("task_id", "test_case_id", name="uq_task_test_case"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False, index=True)
+    test_case_id: Mapped[int] = mapped_column(ForeignKey("test_cases.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    order_index: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    weight: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    is_required: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

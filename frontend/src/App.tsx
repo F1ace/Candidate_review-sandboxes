@@ -1,49 +1,23 @@
 import { useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import { API_BASE, fetchJson } from "./api/client";
+import { RunCodeSummary } from "./components/RunCodeSummary";
+import { SectionHeader } from "./components/SectionHeader";
+import type {
+  Message,
+  PracticeAgentResponse,
+  Role,
+  Scenario,
+  SandboxRunResult,
+  ScoreResultPayload,
+  SessionStatePayload,
+  StreamEventPayload,
+  Task,
+  ToolResultItem,
+  View,
+} from "./types/interview";
+import { formatScoreComment } from "./utils/scoreFormatting";
 import "./App.css";
-
-const API_BASE =
-  import.meta.env.VITE_API_URL ||
-  (typeof window !== "undefined" && window.location.origin.includes("8000") ? "" : "http://127.0.0.1:8000");
-
-type Task = {
-  id: string;
-  type: "theory" | "coding" | "sql";
-  title: string;
-  description?: string;
-  description_for_candidate?: string;
-  max_points?: number;
-  tests_id?: string;
-  sql_scenario_id?: string;
-  language?: string;
-  hints_allowed?: boolean;
-  statement_md?: string;
-  starter_code?: string;
-};
-
-type Role = {
-  id: number;
-  name: string;
-  slug: string;
-  description?: string;
-};
-
-type Scenario = {
-  id: number;
-  role_id: number;
-  name: string;
-  slug: string;
-  description?: string;
-  difficulty?: string;
-  tasks?: Task[];
-};
-
-type Message = {
-  sender: "candidate" | "model" | "system";
-  text: string;
-  created_at?: string;
-  task_id?: string | null;
-};
 
 const defaultTasks: Task[] = [
   {
@@ -52,7 +26,7 @@ const defaultTasks: Task[] = [
     title: "Основы регрессии",
     description: "Объяснить, что такое линейная регрессия, и перечислить метрики качества.",
     max_points: 5,
-    hints_allowed: true,
+    hints_allowed: false,
   },
   {
     id: "C1",
@@ -73,28 +47,37 @@ const defaultTasks: Task[] = [
   },
 ];
 
-async function fetchJson(path: string, init?: RequestInit) {
-  const resp = await fetch(`${API_BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
-    ...init,
-  });
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new Error(text || "Request failed");
-  }
-  return resp.json();
-}
+type StartSessionResponse = {
+  id: string;
+};
 
-function SectionHeader({ title, subtitle }: { title: string; subtitle?: string }) {
-  return (
-    <div className="section-header">
-      <h2>{title}</h2>
-      {subtitle && <p className="muted">{subtitle}</p>}
-    </div>
-  );
-}
+type SubmitCodeResponse = {
+  result?: SandboxRunResult;
+};
 
-type View = "landing" | "session" | "admin";
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const getErrorMessage = (error: unknown): string => {
+  if (error instanceof Error) return error.message;
+  return String(error);
+};
+
+const getToolResults = (resp: PracticeAgentResponse): ToolResultItem[] =>
+  Array.isArray(resp.tool_results) ? resp.tool_results : [];
+
+const findToolResult = (toolResults: ToolResultItem[], toolName: string): ToolResultItem | undefined =>
+  toolResults.find((item) => item?.name === toolName);
+
+const getScoreResultPayload = (rawResult: unknown): ScoreResultPayload | null => {
+  if (!isRecord(rawResult) || !rawResult.ok) return null;
+  return {
+    points: rawResult.points as number,
+    comment: rawResult.comment as string | undefined,
+    is_final: rawResult.is_final as boolean | undefined,
+    task_id: rawResult.task_id as string | undefined,
+  };
+};
 
 function App() {
   const [view, setView] = useState<View>("landing");
@@ -110,7 +93,11 @@ function App() {
   const [codeDraft, setCodeDraft] = useState("# Напишите решение здесь\n");
   const [sqlDraft, setSqlDraft] = useState("select * from orders limit 5;");
   const [agentFeedback, setAgentFeedback] = useState<string | null>(null);
+  const [runCodeResult, setRunCodeResult] = useState<SandboxRunResult | null>(null);
+  const [scoreResult, setScoreResult] = useState<ScoreResultPayload | null>(null);
   const [executionLog, setExecutionLog] = useState<string | null>(null);
+  const [isRunningTests, setIsRunningTests] = useState(false);
+  const [isScoring, setIsScoring] = useState(false);
   const [adminRoleDraft, setAdminRoleDraft] = useState({ name: "", slug: "", description: "" });
   const [adminScenarioDraft, setAdminScenarioDraft] = useState({
     role_id: "",
@@ -131,7 +118,7 @@ function App() {
     [selectedScenario, scenarios],
   );
 
-  const orderedTasks = selectedScenarioObj?.tasks || [];
+  const orderedTasks = useMemo(() => selectedScenarioObj?.tasks ?? [], [selectedScenarioObj]);
   const currentTask = orderedTasks[currentTaskIndex] || null;
   const theoryTasks = useMemo(
   () => orderedTasks.filter((t) => t.type === "theory"),
@@ -152,8 +139,8 @@ const theoryCompleted = useMemo(() => {
     const bootstrap = async () => {
       try {
         const [rolesResp, scenariosResp] = await Promise.all([
-          fetchJson("/roles").catch(() => []),
-          fetchJson("/scenarios").catch(() => []),
+          fetchJson<Role[]>("/roles").catch(() => [] as Role[]),
+          fetchJson<Scenario[]>("/scenarios").catch(() => [] as Scenario[]),
         ]);
         setRoles(rolesResp.length ? rolesResp : sampleRoles());
         setScenarios(scenariosResp.length ? scenariosResp : sampleScenarios());
@@ -183,7 +170,7 @@ const theoryCompleted = useMemo(() => {
   if (currentTask.type === "sql") {
     setSqlDraft(currentTask.description_for_candidate ? "-- Напишите SQL здесь\n" : "select 1;");
   }
-}, [currentTask?.id]);
+}, [currentTask]);
 
   const sampleRoles = (): Role[] => [
     { id: 1, name: "Data Scientist", slug: "ds", description: "ML, эксперименты, метрики" },
@@ -209,7 +196,7 @@ const theoryCompleted = useMemo(() => {
       description: "A/B, метрики продукта, рекомендации",
       difficulty: "middle",
       tasks: [
-        { id: "T-metrics", type: "theory", title: "Метрики A/B", max_points: 5, hints_allowed: true },
+        { id: "T-metrics", type: "theory", title: "Метрики A/B", max_points: 5, hints_allowed: false },
         {
           id: "SQL-ab",
           type: "sql",
@@ -248,7 +235,7 @@ const theoryCompleted = useMemo(() => {
       description: "Ретраи, троттлинг, circuit breaker",
       difficulty: "senior",
       tasks: [
-        { id: "T-circuit", type: "theory", title: "Circuit breaker", max_points: 6, hints_allowed: true },
+        { id: "T-circuit", type: "theory", title: "Circuit breaker", max_points: 6, hints_allowed: false },
         {
           id: "C-rate",
           type: "coding",
@@ -268,7 +255,7 @@ const theoryCompleted = useMemo(() => {
       description: "Инкрементальные пайплайны, буферизация, SLA",
       difficulty: "middle",
       tasks: [
-        { id: "T-de-incr", type: "theory", title: "Инкрементальные загрузки", max_points: 5, hints_allowed: true },
+        { id: "T-de-incr", type: "theory", title: "Инкрементальные загрузки", max_points: 5, hints_allowed: false },
         {
           id: "SQL-de-agg",
           type: "sql",
@@ -324,7 +311,7 @@ const theoryCompleted = useMemo(() => {
           if (!part.trim().startsWith("data:")) continue;
           const raw = part.trim().slice(5).trim();
           if (!raw) continue;
-          const data = JSON.parse(raw);
+          const data = JSON.parse(raw) as StreamEventPayload;
           if (data.type === "token") {
             accumulated += data.content;
             setStreamingReply((prev) => prev + data.content);
@@ -340,8 +327,8 @@ const theoryCompleted = useMemo(() => {
           }
         }
       }
-    } catch (err: any) {
-      pushMessage({ sender: "system", text: `Стрим не удался: ${err.message}` });
+    } catch (err: unknown) {
+      pushMessage({ sender: "system", text: `Стрим не удался: ${getErrorMessage(err)}` });
     } finally {
       setStreaming(false);
       if (accumulated) {
@@ -359,7 +346,7 @@ const theoryCompleted = useMemo(() => {
   }
   setLoading(true);
   try {
-    const resp = await fetchJson("/sessions", {
+    const resp = await fetchJson<StartSessionResponse>("/sessions", {
       method: "POST",
       body: JSON.stringify({
         role_id: selectedRole,
@@ -367,7 +354,7 @@ const theoryCompleted = useMemo(() => {
       }),
     });
 
-    const newId = resp.id as string;
+    const newId = resp.id;
     setSessionId(newId);
 
     setMessages([
@@ -381,8 +368,8 @@ const theoryCompleted = useMemo(() => {
     setCurrentTaskIndex(0);
 
     await streamModel(newId);
-  } catch (err: any) {
-    setStatus(err.message);
+  } catch (err: unknown) {
+    setStatus(getErrorMessage(err));
   } finally {
     setLoading(false);
   }
@@ -399,8 +386,8 @@ const theoryCompleted = useMemo(() => {
         body: JSON.stringify(outgoing),
       });
       await streamModel();
-    } catch (err: any) {
-      pushMessage({ sender: "system", text: `Модель недоступна: ${err.message}` });
+    } catch (err: unknown) {
+      pushMessage({ sender: "system", text: `Модель недоступна: ${getErrorMessage(err)}` });
     }
   };
 
@@ -409,50 +396,88 @@ const theoryCompleted = useMemo(() => {
       setExecutionLog("Нет активной сессии или кода");
       return;
     }
+
+    setAgentFeedback(null);
+    setScoreResult(null);
+    setRunCodeResult(null);
+    setExecutionLog(null);
+    setIsRunningTests(true);
+
     try {
-      const resp = await fetchJson(`/sessions/${sessionId}/tasks/${task.id}/submit_code`, {
+      const resp = await fetchJson<SubmitCodeResponse>(`/sessions/${sessionId}/tasks/${task.id}/submit_code`, {
         method: "POST",
         body: JSON.stringify({
           code: codeDraft,
           language: task.language || "python",
-          tests_id: task.tests_id || "sample_tests",
         }),
       });
-      setExecutionLog(JSON.stringify(resp, null, 2));
-    } catch (err: any) {
-      setExecutionLog(`Ошибка отправки: ${err.message}`);
+
+      const result = resp.result ?? null;
+      setRunCodeResult(result);
+      setExecutionLog(JSON.stringify(result, null, 2));
+    } catch (err: unknown) {
+      setExecutionLog(`Ошибка отправки: ${getErrorMessage(err)}`);
+    } finally {
+      setIsRunningTests(false);
     }
   };
 
   const reviewCodeWithModel = async (task?: Task) => {
-  if (!sessionId || !task) {
-    setExecutionLog("Нет активной сессии или задания");
-    return;
-  }
-  setAgentFeedback(null);
-  setExecutionLog("Запрос к модели: проверка кода...");
-
-  try {
-    const resp = await fetchJson(`/sessions/${sessionId}/practice/code`, {
-      method: "POST",
-      body: JSON.stringify({
-        task_id: task.id,
-        language: (task as any).language || "python",
-        code: codeDraft,
-      }),
-    });
-
-    setAgentFeedback(resp.reply || "Нет ответа модели");
-    // В executionLog можно хранить tool-results (что реально вернул sandbox)
-    if (resp.tool_results) {
-      setExecutionLog(JSON.stringify(resp.tool_results, null, 2));
-    } else {
-      setExecutionLog(JSON.stringify(resp, null, 2));
+    if (!sessionId || !task) {
+      setExecutionLog("Нет активной сессии или задания");
+      return;
     }
-  } catch (err: any) {
-    setAgentFeedback(`Ошибка проверки: ${err.message || String(err)}`);
-  }
-};
+
+    setAgentFeedback(null);
+    setScoreResult(null);
+    setRunCodeResult(null);
+    setExecutionLog(null);
+    setIsRunningTests(true);
+    setIsScoring(false);
+
+    try {
+      const resp = await fetchJson<PracticeAgentResponse>(`/sessions/${sessionId}/practice/code`, {
+        method: "POST",
+        body: JSON.stringify({
+          task_id: task.id,
+          language: task.language || "python",
+          code: codeDraft,
+        }),
+      });
+
+      const toolResults = getToolResults(resp);
+      const runCodeTool = findToolResult(toolResults, "run_code");
+      const scoreTool = findToolResult(toolResults, "score_task");
+      const runCodeToolResult = isRecord(runCodeTool?.result) ? runCodeTool.result : null;
+      const nestedRunCodeResult = runCodeToolResult?.result;
+
+      if (nestedRunCodeResult) {
+        setRunCodeResult(nestedRunCodeResult as SandboxRunResult);
+        setExecutionLog(JSON.stringify(nestedRunCodeResult, null, 2));
+      } else if (runCodeTool?.result) {
+        setExecutionLog(JSON.stringify(runCodeTool.result, null, 2));
+      } else {
+        setExecutionLog(JSON.stringify(resp, null, 2));
+      }
+
+      setIsRunningTests(false);
+      setIsScoring(true);
+
+      const scorePayload = getScoreResultPayload(scoreTool?.result);
+      if (scorePayload) {
+        setScoreResult(scorePayload);
+      } else {
+        setScoreResult(null);
+      }
+
+      setAgentFeedback(resp.reply || "Нет ответа модели");
+    } catch (err: unknown) {
+      setAgentFeedback(`Ошибка проверки: ${getErrorMessage(err)}`);
+    } finally {
+      setIsRunningTests(false);
+      setIsScoring(false);
+    }
+  };
 
   const submitSql = async (task?: Task) => {
     if (!sessionId || !task) {
@@ -468,8 +493,8 @@ const theoryCompleted = useMemo(() => {
         }),
       });
       setExecutionLog(JSON.stringify(resp, null, 2));
-    } catch (err: any) {
-      setExecutionLog(`Ошибка SQL: ${err.message}`);
+    } catch (err: unknown) {
+      setExecutionLog(`Ошибка SQL: ${getErrorMessage(err)}`);
     }
   };
 
@@ -482,37 +507,50 @@ const theoryCompleted = useMemo(() => {
   setExecutionLog("Запрос к модели: проверка SQL...");
 
   try {
-    const resp = await fetchJson(`/sessions/${sessionId}/practice/sql`, {
+    const resp = await fetchJson<PracticeAgentResponse>(`/sessions/${sessionId}/practice/sql`, {
       method: "POST",
       body: JSON.stringify({
         task_id: task.id,
-        sql_scenario_id: (task as any).sql_scenario_id || "",
+        sql_scenario_id: task.sql_scenario_id || "",
         query: sqlDraft,
       }),
     });
 
     setAgentFeedback(resp.reply || "Нет ответа модели");
-    if (resp.tool_results) {
-      setExecutionLog(JSON.stringify(resp.tool_results, null, 2));
+    const toolResults = getToolResults(resp);
+    const runSqlTool = findToolResult(toolResults, "run_sql");
+    const scoreTool = findToolResult(toolResults, "score_task");
+
+    if (runSqlTool?.result) {
+      setExecutionLog(JSON.stringify(runSqlTool.result, null, 2));
     } else {
-      setExecutionLog(JSON.stringify(resp, null, 2));
+      setExecutionLog(null);
     }
-  } catch (err: any) {
-    setAgentFeedback(`Ошибка SQL-проверки: ${err.message || String(err)}`);
+
+    const scorePayload = getScoreResultPayload(scoreTool?.result);
+    if (scorePayload) {
+      setScoreResult(scorePayload);
+    } else {
+      setScoreResult(null);
+    }
+
+    setAgentFeedback(resp.reply || "Нет ответа модели");
+  } catch (err: unknown) {
+    setAgentFeedback(`Ошибка SQL-проверки: ${getErrorMessage(err)}`);
   }
 };
 
   const submitRole = async () => {
     try {
-      const resp = await fetchJson("/roles", {
+      const resp = await fetchJson<Role>("/roles", {
         method: "POST",
         body: JSON.stringify(adminRoleDraft),
       });
       setRoles((prev) => [...prev, resp]);
       setAdminRoleDraft({ name: "", slug: "", description: "" });
       setStatus("Роль сохранена");
-    } catch (err: any) {
-      setStatus(err.message);
+    } catch (err: unknown) {
+      setStatus(getErrorMessage(err));
     }
   };
 
@@ -527,14 +565,14 @@ const theoryCompleted = useMemo(() => {
         difficulty: adminScenarioDraft.difficulty,
         tasks: parsedTasks,
       };
-      const resp = await fetchJson("/scenarios", {
+      const resp = await fetchJson<Scenario>("/scenarios", {
         method: "POST",
         body: JSON.stringify(payload),
       });
       setScenarios((prev) => [...prev, resp]);
       setStatus("Сценарий сохранен");
-    } catch (err: any) {
-      setStatus(`Ошибка сценария: ${err.message}`);
+    } catch (err: unknown) {
+      setStatus(`Ошибка сценария: ${getErrorMessage(err)}`);
     }
   };
 
@@ -552,7 +590,7 @@ const goNextTask = () => {
 
   const taskHint = (task: Task | null) => {
     if (!task) return "";
-    if (task.type === "theory") return "Ответьте в чате. Если задание допускает подсказки, модель предложит наводку.";
+    if (task.type === "theory") return "Ответьте в чате. В теоретическом блоке модель работает как интервьюер и не подсказывает правильный ответ.";
     if (task.type === "coding") return "Напишите код ниже и отправьте. После submit редактор блокируется в реальном UI.";
     if (task.type === "sql") return "Напишите SQL ниже и отправьте. После submit редактор блокируется в реальном UI.";
     return "";
@@ -569,7 +607,7 @@ const goNextTask = () => {
     if (!activeId) return;
 
     try {
-      const session = await fetchJson(`/sessions/${activeId}`);
+      const session = await fetchJson<SessionStatePayload>(`/sessions/${activeId}`);
       setSessionScores(session.scores || {});
     } catch (err) {
       console.error("Не удалось обновить состояние сессии", err);
@@ -809,10 +847,18 @@ const goNextTask = () => {
                       </div>
                     </div>
                     <div style={{ display: "flex", gap: 8 }}>
-                      <button className="ghost" onClick={() => submitCode(currentTask)} disabled={!sessionId}>
+                      <button
+                        className="ghost"
+                        onClick={() => submitCode(currentTask)}
+                        disabled={!sessionId || isRunningTests || isScoring}
+                      >
                         Submit code
                       </button>
-                      <button className="primary" onClick={() => reviewCodeWithModel(currentTask)} disabled={!sessionId}>
+                      <button
+                        className="primary"
+                        onClick={() => reviewCodeWithModel(currentTask)}
+                        disabled={!sessionId || isRunningTests || isScoring}
+                      >
                         Проверить моделью
                       </button>
                     </div>
@@ -843,18 +889,42 @@ const goNextTask = () => {
                   <textarea value={sqlDraft} onChange={(e) => setSqlDraft(e.target.value)} className="code tall" />
                 </div>
               )}
-
-              {executionLog && (
+              {isRunningTests && (
                 <div className="log">
-                  <p className="label">Результат песочницы</p>
+                  <p className="label">Статус</p>
+                  <p>Идёт запуск тестов в песочнице...</p>
+                </div>
+              )}
+
+              <RunCodeSummary runCodeResult={runCodeResult} />
+
+              {executionLog && !runCodeResult && (
+                <div className="log">
+                  <p className="label">Raw результат</p>
                   <pre>{executionLog}</pre>
                 </div>
               )}
-              
-                {agentFeedback && (
+
+              {isScoring && (
+                <div className="log">
+                  <p className="label">Статус</p>
+                  <p>Формируется оценка модели...</p>
+                </div>
+              )}
+              {(scoreResult || agentFeedback) && (
                 <div className="log">
                   <p className="label">Комментарий модели</p>
-                  <ReactMarkdown>{agentFeedback}</ReactMarkdown>
+
+                  {scoreResult ? (
+                    <>
+                      <p><strong>Оценка:</strong> {scoreResult.points}/10</p>
+                      {scoreResult.comment && (
+                        <ReactMarkdown>{formatScoreComment(scoreResult.comment)}</ReactMarkdown>
+                      )}
+                    </>
+                  ) : (
+                    <ReactMarkdown>{agentFeedback || ""}</ReactMarkdown>
+                  )}
                 </div>
               )}
             </div>

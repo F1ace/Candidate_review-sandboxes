@@ -1,5 +1,6 @@
 # Python
 __pycache__/
+**/__pycache__/
 *.py[cod]
 *.pyd
 *.pyo
@@ -7,10 +8,22 @@ __pycache__/
 .venv/
 venv/
 env/
+backend/.venv/
+.pytest_cache/
+.mypy_cache/
 
-# Databases
+# Databases / local artifacts
 *.db
+*.sqlite
+*.sqlite3
 
 # Frontend
 node_modules/
+frontend/node_modules/
 dist/
+frontend/dist/
+frontend/.vite/
+
+# OS
+.DS_Store
+Thumbs.db

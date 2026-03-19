@@ -11,6 +11,15 @@ from .router import router
 from .schemas import PracticeCodeRequest, PracticeSqlRequest
 from .state import _get_task_by_id
 from .state import advance_task_if_needed
+from .dispatch import (
+    _aggregate_theory_intermediate_scores,
+    _build_tests_payload,
+    _compute_final_theory_points,
+    _theory_ready_for_scoring,
+    _validate_theory_intermediate_score_args,
+    normalize_sandbox_result,
+)
+
 @router.post("/", response_model=schemas.SessionOut, status_code=status.HTTP_201_CREATED)
 @router.post("", response_model=schemas.SessionOut, status_code=status.HTTP_201_CREATED)
 def create_session(payload: schemas.SessionCreate, db: Session = Depends(get_db)):
@@ -90,13 +99,40 @@ def score_task(session_id: str, payload: schemas.ScoreCreate, db: Session = Depe
         if points < 1 or points > 10:
             raise HTTPException(status_code=400, detail="Theory score should be within [1, 10]")
 
+        question_index = payload.question_index
+        if not payload.is_final:
+            validation_error = _validate_theory_intermediate_score_args(task, question_index)
+            if validation_error:
+                raise HTTPException(status_code=400, detail=validation_error)
+            question_index = int(question_index)
+        else:
+            if not _theory_ready_for_scoring(session, db, task):
+                raise HTTPException(status_code=400, detail="Theory block is not finished yet. Ask all questions first.")
+
+            aggregated = _aggregate_theory_intermediate_scores(session, db, payload.task_id)
+
+            if aggregated["expected_questions"] and aggregated["missing_questions"]:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Theory intermediate scores are incomplete. "
+                        f"Missing question_index: {aggregated['missing_questions']}"
+                    ),
+                )
+
+            if aggregated["avg_points"] is None:
+                raise HTTPException(status_code=400, detail="Theory final score requires intermediate scores first.")
+
+            points = _compute_final_theory_points(points, aggregated["avg_points"])
+            question_index = None
+
         score = models.Score(
             session_id=session_id,
             task_id=payload.task_id,
             points=points,
             comment=comment,
             is_final=payload.is_final,
-            question_index=payload.question_index,
+            question_index=question_index,
             score_type="theory_final" if payload.is_final else "theory_intermediate",
         )
         db.add(score)
@@ -138,10 +174,26 @@ def submit_code(session_id: str, task_id: str, payload: schemas.CodeSubmission, 
     session = db.get(models.Session, session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    task = _get_task_by_id(session.scenario, task_id)
-    if not task or task.get("type") != "coding":
+
+    task_row = (
+        db.query(models.Task)
+        .filter(
+            models.Task.scenario_id == session.scenario_id,
+            models.Task.external_id == task_id,
+        )
+        .first()
+    )
+
+    if not task_row or task_row.task_type != "coding":
         raise HTTPException(status_code=400, detail="Task is not a coding task")
-    result = sandbox.run_code(payload.language, payload.code, payload.tests_id)
+
+    tests_payload = _build_tests_payload(task_row)
+    if not tests_payload:
+        raise HTTPException(status_code=400, detail=f"No active testcases linked to task {task_id}")
+
+    raw_result = sandbox.run_code(payload.language, payload.code, tests_payload)
+    result = normalize_sandbox_result(raw_result)
+
     system_msg = models.Message(
         session_id=session_id,
         sender="system",
@@ -150,6 +202,7 @@ def submit_code(session_id: str, task_id: str, payload: schemas.CodeSubmission, 
     )
     db.add(system_msg)
     db.commit()
+
     return {"task_id": task_id, "result": result}
 
 @router.post("/{session_id}/tasks/{task_id}/submit_sql")
@@ -223,13 +276,46 @@ def practice_code(session_id: str, payload: PracticeCodeRequest, db: Session = D
     # Агентная проверка: модель сама вызывает tools по протоколу
     instruction = (
         f"Ты проверяешь coding-задачу {payload.task_id} ({task.get('title','')}).\n"
-        "Кандидат написал код сам.\n"
-        "Выполни проверку строго через инструменты:\n"
-        "1) run_code(language, code=<candidate_code>)\n"
-        "2) По результату выполнения (stdout/stderr/exit_code) сделай вывод и вызови score_task.\n\n"
+        "Кандидат уже написал код.\n"
+        "Твоя задача — строго завершить пайплайн в таком порядке:\n"
+        "1) вызвать run_code\n"
+        "2) дождаться результата sandbox\n"
+        "3) вызвать score_task\n"
+        "4) только после этого дать кандидату финальный комментарий.\n\n"
         "ВАЖНО:\n"
-        "- Нельзя писать 'score_task -> {...}' текстом. Используй только tool-вызов.\n"
-        "- До вызова score_task не давай кандидату итоговую оценку.\n\n"
+        "- Не переписывай и не пересобирай код кандидата.\n"
+        "- Не оборачивай код в markdown fences.\n"
+        "- Не передавай в run_code свой вариант кода.\n"
+        "- Оценивай решение только после результата sandbox.\n"
+        "- Балл и комментарий должны формироваться на основе passrate тестов, корректности решения, качества кода, читаемости, структуры, нейминга и обработки крайних случаев.\n"
+        "- Обязательно учитывай, какие именно тесты упали и какие ошибки вернул sandbox.\n"
+        "- Если тесты падают на одинаковом сценарии, укажи, какая часть логики, вероятно, реализована неверно или нестабильно.\n"
+        "- Если это уместно, кратко оцени сложность и эффективность решения.\n"
+        "- В score_task.comment используй ровно 6 секций:\n"
+        "  Итог:\n"
+        "  Тесты:\n"
+        "  Корректность:\n"
+        "  Качество кода:\n"
+        "  Сложность и эффективность:\n"
+        "  Что можно улучшить:\n"
+        "- Все 4 секций обязательны и не должны быть пустыми.\n"
+        "- Уже в ПЕРВОМ вызове score_task заполни comment полностью.\n"
+        "- points передай отдельно как число, а не текстом внутри comment.\n"
+        "- В score_task.comment используй ровно 4 секции:\n"
+        "  Корректность:\n"
+        "  Качество кода:\n"
+        "  Сложность и эффективность:\n"
+        "  Что можно улучшить:\n"
+        "- Все 4 секции обязательны и не должны быть пустыми.\n"
+        "- В каждой секции должен быть обычный законченный текст из 1-3 предложений.\n"
+        "- Нельзя использовать квадратные скобки, шаблонные инструкции или текст вида 'заполни'.\n"
+        "- Не дублируй в comment балл и количество пройденных тестов: они отображаются отдельно.\n"
+        "- Если все тесты пройдены, это не освобождает от необходимости заполнить разделы 'Качество кода', 'Сложность и эффективность' и 'Что можно улучшить'.\n"
+        "- Нельзя оставлять только заголовок без содержимого.\n"
+        "- Нельзя использовать квадратные скобки, шаблонные инструкции или текст вида 'заполни'.\n"
+        "- Для секции 'Сложность и эффективность' можно написать, что для данной задачи отдельные замечания по сложности несущественны, если это действительно так.\n"
+        "- Балл не должен определяться только по passrate: учитывай также качество решения.\n"
+        "- Финальный ответ кандидату должен быть обычным текстом, без JSON и без служебных полей.\n\n"
         f"КОД КАНДИДАТА:\n{payload.code}\n"
     )
 

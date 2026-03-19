@@ -33,16 +33,24 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "run_code",
-            "description": "Запустить код кандидата в песочнице и вернуть stdout/stderr/exit_code. Используй для проверки решения по coding-задачам.",
+            "description": "Безопасно выполнить код кандидата в песочнице с тест-кейсами, связанными с задачей в БД. Используй для проверки coding-задач. Возвращайся к score_task только после получения результата тестов.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "task_id": {"type": "string", "description": "ID задания (если известно)"},
-                    "language": {"type": "string", "description": "Язык, например python"},
-                    "code": {"type": "string", "description": "Исходный код кандидата"},
-                    "tests_id": {"type": "string", "description": "ID тестов (если задано в task)"}
+                    "task_id": {
+                        "type": "string",
+                        "description": "ID задания из сценария, например C-SHORTENER"
+                    },
+                    "language": {
+                        "type": "string",
+                        "description": "Язык решения, например python"
+                    },
+                    "code": {
+                        "type": "string",
+                        "description": "Исходный код кандидата"
+                    }
                 },
-                "required": ["language", "code"],
+                "required": ["task_id", "language", "code"],
             },
         },
     },
