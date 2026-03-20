@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 
@@ -177,8 +177,12 @@ class LogisticRegression:
                     {
                         "id": "SQL1",
                         "type": "sql",
-                        "title": "Агрегация заказов",
-                        "description_for_candidate": "По таблицам orders и customers посчитайте сумму заказов по городам.",
+                        "title": "Агрегация завершённых заказов",
+                        "description_for_candidate": (
+                            "По таблицам orders и customers посчитайте сумму завершённых заказов по городам клиентов. "
+                            "Учитывайте только заказы со статусом paid или shipped. "
+                            "Верните city, orders_cnt, total_revenue."
+                        ),
                         "max_points": 8,
                         "sql_scenario_id": "ecommerce_basic",
                     },
@@ -276,8 +280,12 @@ class ABReport:
                     {
                         "id": "SQL-ab",
                         "type": "sql",
-                        "title": "Конверсия по когорте",
-                        "description_for_candidate": "Напишите запрос конверсии по дню регистрации.",
+                        "title": "Конверсия по дню регистрации",
+                        "description_for_candidate": (
+                            "Для каждой даты регистрации пользователей посчитайте "
+                            "signup_date, users_cnt, converted_users и conversion_rate. "
+                            "Пользователь считается сконвертировавшимся, если у него есть хотя бы одно событие purchase."
+                        ),
                         "sql_scenario_id": "ab_product",
                         "max_points": 8,
                     },
@@ -661,8 +669,12 @@ class DailyDistinctAggregator:
                     {
                         "id": "SQL-de-agg",
                         "type": "sql",
-                        "title": "Агрегация событий",
-                        "description_for_candidate": "Посчитайте DAU по регионам из таблицы events.",
+                        "title": "DAU по регионам",
+                        "description_for_candidate": (
+                            "Посчитайте дневную активную аудиторию по регионам из таблицы events. "
+                            "Активный пользователь — это уникальный user_id, у которого было хотя бы одно событие в этот день. "
+                            "Верните event_date, region, dau."
+                        ),
                         "sql_scenario_id": "events_basic",
                         "max_points": 8,
                     },
@@ -759,8 +771,13 @@ def scd2_merge(current: List[Dict], updates: List[Dict]):
                     {
                         "id": "SQL-scd",
                         "type": "sql",
-                        "title": "SCD Type 2 обновление",
-                        "description_for_candidate": "Напишите SQL, который добавляет новую версию записи клиента.",
+                        "title": "SCD Type 2 обновление клиентов",
+                        "description_for_candidate": (
+                            "В таблице dim_customers хранится история клиентов по правилам SCD Type 2. "
+                            "Нужно обработать изменения из customer_updates: "
+                            "если атрибуты клиента изменились, закрыть текущую запись и вставить новую; "
+                            "если изменений нет — ничего не делать."
+                        ),
                         "sql_scenario_id": "scd_customers",
                         "max_points": 9,
                     },

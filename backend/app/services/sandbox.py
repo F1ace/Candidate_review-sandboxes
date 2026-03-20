@@ -1,5 +1,7 @@
-from typing import Any, Dict
+from typing import Any, Dict, Optional
+
 import httpx
+
 from ..config import settings
 
 
@@ -20,10 +22,16 @@ def run_code(language: str, code: str, tests: list[dict[str, Any]]) -> Dict[str,
         }
 
 
-def run_sql(sql: str, scenario_id: str) -> Dict[str, Any]:
+def run_sql(
+    *,
+    schema_sql: str,
+    query: str,
+    seed_sql: Optional[str] = None,
+) -> Dict[str, Any]:
     payload = {
-        "sql": sql,
-        "scenario_id": scenario_id,
+        "schema_sql": schema_sql or "",
+        "seed_sql": seed_sql,
+        "query": query,
     }
     try:
         resp = httpx.post(settings.sandbox_sql_url, json=payload, timeout=30)
@@ -32,5 +40,5 @@ def run_sql(sql: str, scenario_id: str) -> Dict[str, Any]:
     except Exception as exc:
         return {
             "success": False,
-            "details": f"sandbox run_sql failed: {exc}",
+            "error": f"sandbox run_sql failed: {exc}",
         }

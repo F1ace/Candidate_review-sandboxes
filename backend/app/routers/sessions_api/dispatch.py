@@ -5,7 +5,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ... import models
-from ...services import sandbox, web_search
+from ...services import sandbox, web_search, sql_runner
 from ...services.rag import search_documents
 from .state import _get_task_by_id
 
@@ -211,23 +211,45 @@ def _dispatch_tool_call(session: models.Session, tc: dict[str, Any], db: Session
             }
 
         if name == "run_sql":
-            query = args.get("query") or ""
+            query = (args.get("query") or "").strip()
             if not query:
                 return {"ok": False, "error": "query is required"}
 
-            sql_scenario_id = args.get("sql_scenario_id")
             task_id = args.get("task_id")
+            sql_scenario_id = (args.get("sql_scenario_id") or "").strip()
 
-            if not sql_scenario_id and task_id:
-                task = _get_task_by_id(session.scenario, task_id)
-                if task:
-                    sql_scenario_id = task.get("sql_scenario_id")
+            task_row = None
+            if task_id:
+                task_row = (
+                    db.query(models.Task)
+                    .filter(
+                        models.Task.scenario_id == session.scenario_id,
+                        models.Task.external_id == task_id,
+                    )
+                    .first()
+                )
+                if not task_row:
+                    return {"ok": False, "task_id": task_id, "error": f"Task not found: {task_id}"}
+
+                if task_row.task_type != "sql":
+                    return {"ok": False, "task_id": task_id, "error": f"Task is not a SQL task: {task_id}"}
+
+                if not sql_scenario_id:
+                    sql_scenario_id = (task_row.sql_scenario_ref or "").strip()
+
+            if task_row:
+                return sql_runner.run_sql_for_task(
+                    db=db,
+                    task_row=task_row,
+                    query=query,
+                )
 
             if not sql_scenario_id:
                 return {"ok": False, "error": "sql_scenario_id is required"}
 
-            return sandbox.run_sql(
-                sql_scenario_id=sql_scenario_id,
+            return sql_runner.run_sql_for_scenario_name(
+                db=db,
+                scenario_name=sql_scenario_id,
                 query=query,
             )
 
@@ -236,13 +258,22 @@ def _dispatch_tool_call(session: models.Session, tc: dict[str, Any], db: Session
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
-def _validate_practice_comment(comment: str) -> str | None:
-    required_headers = [
-        "Корректность:",
-        "Качество кода:",
-        "Сложность и эффективность:",
-        "Что можно улучшить:",
-    ]
+def _validate_practice_comment(comment: str, task_type: str) -> str | None:
+    if task_type == "sql":
+        required_headers = [
+            "Корректность:",
+            "Качество решения:",
+            "Работа с SQL:",
+            "Что можно улучшить:",
+        ]
+    else:
+        # coding остаётся как раньше
+        required_headers = [
+            "Корректность:",
+            "Качество кода:",
+            "Сложность и эффективность:",
+            "Что можно улучшить:",
+        ]
 
     missing = [header for header in required_headers if header not in comment]
     if missing:
@@ -326,7 +357,7 @@ def _apply_score(session: models.Session, args: dict[str, Any], db: Session) -> 
                 "error": "Theory comment looks truncated; provide a complete comment.",
             }
     if task_type in {"coding", "sql"}:
-        comment_error = _validate_practice_comment(comment)
+        comment_error = _validate_practice_comment(comment, task_type)
         if comment_error:
             return {"ok": False, "error": comment_error}
 

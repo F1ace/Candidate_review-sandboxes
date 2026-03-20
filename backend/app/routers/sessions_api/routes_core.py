@@ -5,8 +5,8 @@ from sqlalchemy.orm import Session
 
 from ... import models, schemas
 from ...database import get_db
-from ...services import sandbox, web_search
-from .practice import _practice_agent_review
+from ...services import sandbox, web_search, sql_runner, sql_evaluator
+from .practice import _practice_agent_review, _practice_sql_agent_review
 from .router import router
 from .schemas import PracticeCodeRequest, PracticeSqlRequest
 from .state import _get_task_by_id
@@ -210,10 +210,27 @@ def submit_sql(session_id: str, task_id: str, payload: schemas.SqlSubmission, db
     session = db.get(models.Session, session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    task = _get_task_by_id(session.scenario, task_id)
-    if not task or task.get("type") != "sql":
+
+    task_row = (
+        db.query(models.Task)
+        .filter(
+            models.Task.scenario_id == session.scenario_id,
+            models.Task.external_id == task_id,
+        )
+        .first()
+    )
+    if not task_row:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    if task_row.task_type != "sql":
         raise HTTPException(status_code=400, detail="Task is not a SQL task")
-    result = sandbox.run_sql(payload.sql_scenario_id, payload.query)
+
+    result = sql_runner.run_sql_for_task(
+        db=db,
+        task_row=task_row,
+        query=payload.query,
+    )
+
     system_msg = models.Message(
         session_id=session_id,
         sender="system",
@@ -222,7 +239,40 @@ def submit_sql(session_id: str, task_id: str, payload: schemas.SqlSubmission, db
     )
     db.add(system_msg)
     db.commit()
-    return {"task_id": task_id, "result": result}
+
+    return {
+        "task_id": task_id,
+        "result": result,
+    }
+
+def _practice_sql_review(
+    *,
+    session: models.Session,
+    db: Session,
+    task_row: models.Task,
+    query: str,
+):
+    instruction = (
+        f"Ты проверяешь SQL-решение кандидата для задачи {task_row.external_id} ({task_row.title}).\n\n"
+        f"Задача для кандидата:\n{task_row.description_for_candidate}\n\n"
+        f"SQL кандидата:\n{query}\n\n"
+        f"Важно:\n"
+        f"1. Сначала ОБЯЗАТЕЛЬНО вызови run_sql с task_id='{task_row.external_id}' и query кандидата.\n"
+        f"2. Затем проанализируй результат выполнения SQL.\n"
+        f"3. После этого ОБЯЗАТЕЛЬНО вызови score_task для task_id='{task_row.external_id}'.\n"
+        f"4. И comment в score_task, и финальный ответ кандидату должны содержать РОВНО 4 непустые секции:\n"
+        f"Корректность: ...\n"
+        f"Качество решения: ...\n"
+        f"Работа с SQL: ...\n"
+        f"Что можно улучшить: ...\n"
+    )
+
+    return _practice_sql_agent_review(
+        session=session,
+        db=db,
+        instruction=instruction,
+        task_id=task_row.external_id,
+    )
 
 @router.post("/{session_id}/practice/sql")
 def practice_sql(session_id: str, payload: PracticeSqlRequest, db: Session = Depends(get_db)):
@@ -230,19 +280,26 @@ def practice_sql(session_id: str, payload: PracticeSqlRequest, db: Session = Dep
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    task = _get_task_by_id(session.scenario, payload.task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found in scenario")
-
-    # Инструкция модели: она должна вызвать run_sql
-    instruction = (
-        f"Проверь решение кандидата для sql-задачи {payload.task_id} ({task.get('title','')}).\n"
-        f"СНАЧАЛА вызови инструмент run_sql с sql_scenario_id='{payload.sql_scenario_id}' и query.\n"
-        f"ПОТОМ объясни результат (ошибки/замечания), дай рекомендации и при необходимости оцени через score_task.\n\n"
-        f"SQL:\n{payload.query}"
+    task_row = (
+        db.query(models.Task)
+        .filter(
+            models.Task.scenario_id == session.scenario_id,
+            models.Task.external_id == payload.task_id,
+        )
+        .first()
     )
+    if not task_row:
+        raise HTTPException(status_code=404, detail="Task not found")
 
-    return _practice_agent_review(session=session, db=db, instruction=instruction, task_id=payload.task_id)
+    if task_row.task_type != "sql":
+        raise HTTPException(status_code=400, detail="Task is not a SQL task")
+
+    return _practice_sql_review(
+        session=session,
+        db=db,
+        task_row=task_row,
+        query=payload.query,
+    )
 
 @router.post("/{session_id}/complete")
 def complete_session(session_id: str, db: Session = Depends(get_db)):
@@ -325,7 +382,5 @@ def practice_code(session_id: str, payload: PracticeCodeRequest, db: Session = D
         instruction=instruction,
         task_id=payload.task_id,
     )
-
+    
     return {"reply": review["reply"], "tool_results": review.get("tool_results", [])}
-
-
