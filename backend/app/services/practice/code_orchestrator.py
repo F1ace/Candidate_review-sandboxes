@@ -27,7 +27,6 @@ def _parse_tool_call_args(tc: dict[str, Any]) -> dict[str, Any]:
         args = {}
     return args
 
-
 def _tool_name(tc: dict[str, Any]) -> str:
     return (tc.get("function") or {}).get("name") or ""
 
@@ -48,20 +47,6 @@ def _next_step_hint(next_tool: str) -> str:
     if next_tool == "score_task":
         return f"{idx}) score_task(task_id, points, comment)"
     return f"{idx}) {next_tool}"
-
-
-def _autofinal_summary(state: CodeWorkflowState) -> str:
-    report = state.artifacts.get("run_report") or {}
-    passrate = float(report.get("passrate") or 0.0)
-    score = state.artifacts.get("score_result") or {}
-    points = score.get("points")
-
-    summary = "Проверка завершена. "
-    if report:
-        summary += f"Passrate: {passrate:.2%}. "
-    if points is not None:
-        summary += f"Оценка: {points}."
-    return summary.strip()
 
 def _practice_fallback_feedback(state: CodeWorkflowState) -> str:
     report = state.artifacts.get("run_report") or {}
@@ -147,19 +132,25 @@ def _score_task_retry_template(state: CodeWorkflowState) -> str:
     failed_tests_block = "\n".join(failed_tests) if failed_tests else "- нет"
 
     return (
-        "Повтори вызов score_task и заполни comment полностью.\n"
-        "Используй СТРОГО такой формат comment:\n\n"
-        "Корректность: [объясни, что работает, а что не работает, опираясь на результаты sandbox]\n"
-        "Качество кода: [оцени читаемость, структуру, нейминг, крайние случаи]\n"
-        "Сложность и эффективность: [кратко оцени или явно напиши, что для этой задачи отдельный комментарий несущественен]\n"
+        "Предыдущий score_task не прошёл валидацию.\n"
+        "Нужно НЕМЕДЛЕННО повторить только вызов score_task.\n"
+        "Не пиши финальный ответ кандидату, пока score_task не будет принят.\n\n"
+        "Исправь только comment.\n"
+        "points передай отдельно.\n"
+        "comment должен содержать СТРОГО 4 непустые секции:\n\n"
+        "Корректность: [объясни, что работает и что не работает по результатам sandbox]\n"
+        "Качество кода: [оцени читаемость, структуру, нейминг, обработку крайних случаев]\n"
+        "Сложность и эффективность: [краткая оценка или явная фраза, что отдельные замечания несущественны]\n"
         "Что можно улучшить: [1-3 конкретных улучшения]\n\n"
         f"Тесты песочницы: пройдено {tests_passed} из {tests_total}.\n"
         "Упавшие тесты:\n"
         f"{failed_tests_block}\n\n"
-        "Нельзя оставлять секции пустыми. "
-        "Нельзя использовать квадратные скобки в финальном comment. "
-        "points передай отдельно. "
-        "После этого снова вызови score_task."
+        "Правила:\n"
+        "- все 4 секции обязательны;\n"
+        "- ни одна секция не должна быть пустой;\n"
+        "- нельзя использовать квадратные скобки в финальном тексте;\n"
+        "- нельзя писать шаблонные фразы и инструкции;\n"
+        "- после исправления верни только tool call score_task."
     )
 
 def run_practice_code_review(
@@ -247,6 +238,8 @@ def run_practice_code_review(
     tool_results_for_ui: list[dict[str, Any]] = []
 
     final_msg: dict[str, Any] | None = None
+    backend_completed_pipeline = False
+    backend_generated_reply = False
 
     for _ in range(max_iters):
         allowed_tools = state.allowed_tools()
@@ -427,7 +420,17 @@ def run_practice_code_review(
             next_tool = state.next_required_tool()
             if not next_tool:
                 break
-            prepared_args, arg_error = state.prepare_args(next_tool, {}, task_id=task_id, candidate_code=candidate_code)
+
+            if next_tool == "score_task":
+                auto_error = "model did not produce score_task comment"
+                break
+
+            prepared_args, arg_error = state.prepare_args(
+                next_tool,
+                {},
+                task_id=task_id,
+                candidate_code=candidate_code,
+            )
             if arg_error:
                 auto_error = arg_error
                 break
@@ -459,21 +462,167 @@ def run_practice_code_review(
                 auto_error = reason or "unknown auto-step error"
                 break
 
+        if state.is_complete():
+            backend_completed_pipeline = True
+
         if not state.is_complete():
+            if not (
+                state.next_required_tool() == "score_task"
+                and state.artifacts.get("run_report")
+            ):
+                final_msg = {
+                    "role": "assistant",
+                    "content": (
+                        "Проверка не завершена автоматически. "
+                        f"Статус: {state.short_status()}. "
+                        f"Причина: {auto_error or 'unknown error'}"
+                    ),
+                }
+
+    if final_msg is None and state.next_required_tool() == "score_task" and state.artifacts.get("run_report"):
+        if final_msg is None and not state.is_complete():
             final_msg = {
                 "role": "assistant",
                 "content": (
                     "Проверка не завершена автоматически. "
                     f"Статус: {state.short_status()}. "
-                    f"Причина: {auto_error or 'unknown error'}"
+                    "Причина: model did not complete required score_task step"
                 ),
             }
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "Проверка кода уже выполнена, результат sandbox получен. "
+                    "Теперь нужно НЕМЕДЛЕННО вызвать только score_task. "
+                    "Не пиши финальный ответ кандидату. "
+                    "Верни только tool call score_task с валидным comment.\n\n"
+                    f"{_score_task_first_call_prompt(state)}"
+                ),
+            }
+        )
 
-    if final_msg is None:
-        final_msg = {
-            "role": "assistant",
-            "content": _autofinal_summary(state),
-        }
+        resp = chat(messages, tools=_tools_subset(tools, ["score_task"]))
+        assistant_msg = resp["choices"][0]["message"]
+        tool_calls = assistant_msg.get("tool_calls") or []
+
+        if not tool_calls:
+            content = (assistant_msg.get("content") or "").strip()
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "СТОП. Сейчас нужен только вызов score_task. "
+                        "Нельзя писать обычный текст вместо tool call. "
+                        "Повтори и верни только score_task."
+                    ),
+                }
+            )
+
+            resp = chat(messages, tools=_tools_subset(tools, ["score_task"]))
+            assistant_msg = resp["choices"][0]["message"]
+            tool_calls = assistant_msg.get("tool_calls") or []
+            messages.append(assistant_msg)
+
+        messages.append(assistant_msg)
+
+        if tool_calls:
+            retry_tools = False
+            tool_messages: list[dict[str, Any]] = []
+
+            for tc in tool_calls:
+                name = _tool_name(tc)
+                tc_id = tc.get("id") or f"{name}_call"
+
+                if name != "score_task":
+                    retry_tools = True
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": "Сейчас разрешён только вызов score_task.",
+                        }
+                    )
+                    continue
+
+                args = _parse_tool_call_args(tc)
+                prepared_args, arg_error = state.prepare_args(
+                    name,
+                    args,
+                    task_id=task_id,
+                    candidate_code=candidate_code,
+                )
+                if arg_error:
+                    retry_tools = True
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": f"Невозможно выполнить score_task: {arg_error}",
+                        }
+                    )
+                    continue
+
+                tc["function"]["arguments"] = json.dumps(prepared_args, ensure_ascii=False)
+
+                try:
+                    result = dispatch_tool_call(session, tc, db)
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("Tool failed: %s", name)
+                    result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+                tool_results_for_ui.append({"name": name, "result": result})
+                db.add(
+                    models.Message(
+                        session_id=session.id,
+                        sender="tool",
+                        text=f"{name} -> {result}",
+                        task_id=task_id,
+                    )
+                )
+
+                ok, reason = state.mark_result(
+                    name,
+                    result if isinstance(result, dict) else {"error": "non-dict tool result"},
+                )
+                if not ok:
+                    retry_tools = True
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"Инструмент score_task вернул некорректный результат: {reason}.\n\n"
+                                f"{_score_task_retry_template(state)}"
+                            ),
+                        }
+                    )
+                else:
+                    tool_messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc_id,
+                            "content": json.dumps(result, ensure_ascii=False),
+                        }
+                    )
+
+            if not retry_tools:
+                messages.extend(tool_messages)
+
+    if final_msg is None and state.is_complete():
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "Проверка практического задания уже завершена. "
+                    "Теперь напиши финальный отзыв кандидату обычным текстом. "
+                    "Не вызывай инструменты. "
+                    "Не пиши JSON, tool-dump, schema или служебные поля. "
+                    "Ответ должен содержать итоговый балл, краткий вывод по корректности, "
+                    "комментарий по качеству кода, замечание по сложности/эффективности при необходимости "
+                    "и 1-3 конкретных улучшения."
+                ),
+            }
+        )
+        resp = chat(messages, tools=[])
+        final_msg = resp["choices"][0]["message"]
 
     content = (final_msg.get("content") or "").strip()
 
@@ -487,10 +636,24 @@ def run_practice_code_review(
         or content.startswith("Проверка завершена. Passrate:")
     ):
         content = _practice_fallback_feedback(state)
+        backend_generated_reply = True
 
     score_result = state.artifacts.get("score_result") or {}
-    if score_result and score_result.get("comment"):
+    if (
+        score_result
+        and score_result.get("comment")
+        and (
+            not content
+            or content.lstrip().startswith("{")
+            or "score_task ->" in content
+            or "Theory block is not finished yet" in content
+            or "Вопрос 1/" in content
+            or "Сегодня мы" in content
+            or content.startswith("Проверка завершена. Passrate:")
+        )
+    ):
         content = _practice_reply_from_score(state)
+        backend_generated_reply = True
 
     db.add(models.Message(session_id=session.id, sender="model", text=content, task_id=task_id))
     db.commit()

@@ -344,3 +344,68 @@ button:hover {
     grid-template-columns: 1fr;
   }
 }
+
+.result-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 8px;
+  font-size: 14px;
+}
+
+.result-table th,
+.result-table td {
+  border: 1px solid rgba(214, 226, 255, 0.16);
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.result-table th {
+  background: rgba(255, 255, 255, 0.06);
+  color: #f3f7ff;
+}
+
+.result-table td {
+  color: #d6e2ff;
+}
+
+.sql-schema-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sql-schema-card {
+  border: 1px solid #d9dfe7;
+  border-radius: 12px;
+  padding: 12px;
+  background: #fdfefe;
+}
+
+.sql-schema-card h6 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+
+.sql-schema-card .result-table th,
+.sql-schema-card .result-table td {
+  border: 1px solid #d9dfe7;
+}
+
+.sql-schema-card .result-table th {
+  background: #f3f6fb;
+  color: #0f172a;
+}
+
+.sql-schema-card .result-table td {
+  color: #1f2937;
+}
+
+.sql-schema-card .label {
+  color: #4b5563;
+}
+
+.markdown ul,
+.markdown ol {
+  padding-left: 20px;
+}

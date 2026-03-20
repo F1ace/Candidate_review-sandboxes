@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { API_BASE, fetchJson } from "./api/client";
 import { RunCodeSummary } from "./components/RunCodeSummary";
+import { RunSqlSummary } from "./components/RunSqlSummary";
+import { SqlSchemaPreview } from "./components/SqlSchemaPreview";
 import { SectionHeader } from "./components/SectionHeader";
 import type {
   Message,
@@ -15,8 +17,10 @@ import type {
   Task,
   ToolResultItem,
   View,
+  SqlRunResult,
+  SqlScenario,
 } from "./types/interview";
-import { formatScoreComment } from "./utils/scoreFormatting";
+import { formatCodeScoreComment, formatSqlScoreComment } from "./utils/scoreFormatting";
 import "./App.css";
 
 const defaultTasks: Task[] = [
@@ -96,6 +100,8 @@ function App() {
   const [runCodeResult, setRunCodeResult] = useState<SandboxRunResult | null>(null);
   const [scoreResult, setScoreResult] = useState<ScoreResultPayload | null>(null);
   const [executionLog, setExecutionLog] = useState<string | null>(null);
+  const [sqlRunResult, setSqlRunResult] = useState<SqlRunResult | null>(null);
+  const [sqlScenarios, setSqlScenarios] = useState<SqlScenario[]>([]);
   const [isRunningTests, setIsRunningTests] = useState(false);
   const [isScoring, setIsScoring] = useState(false);
   const [adminRoleDraft, setAdminRoleDraft] = useState({ name: "", slug: "", description: "" });
@@ -120,6 +126,13 @@ function App() {
 
   const orderedTasks = useMemo(() => selectedScenarioObj?.tasks ?? [], [selectedScenarioObj]);
   const currentTask = orderedTasks[currentTaskIndex] || null;
+  const activeSqlScenario = useMemo(() => {
+  if (!currentTask || currentTask.type !== "sql" || !currentTask.sql_scenario_id) {
+    return null;
+  }
+
+  return sqlScenarios.find((item) => item.name === currentTask.sql_scenario_id) || null;
+}, [currentTask, sqlScenarios]);
   const theoryTasks = useMemo(
   () => orderedTasks.filter((t) => t.type === "theory"),
   [orderedTasks],
@@ -138,18 +151,23 @@ const theoryCompleted = useMemo(() => {
   useEffect(() => {
     const bootstrap = async () => {
       try {
-        const [rolesResp, scenariosResp] = await Promise.all([
+        const [rolesResp, scenariosResp, sqlScenariosResp] = await Promise.all([
           fetchJson<Role[]>("/roles").catch(() => [] as Role[]),
           fetchJson<Scenario[]>("/scenarios").catch(() => [] as Scenario[]),
+          fetchJson<SqlScenario[]>("/sql-scenarios").catch(() => [] as SqlScenario[]),
         ]);
+
         setRoles(rolesResp.length ? rolesResp : sampleRoles());
         setScenarios(scenariosResp.length ? scenariosResp : sampleScenarios());
+        setSqlScenarios(sqlScenariosResp);
       } catch (err) {
         console.error(err);
         setRoles(sampleRoles());
         setScenarios(sampleScenarios());
+        setSqlScenarios([]);
       }
     };
+
     bootstrap();
   }, []);
 
@@ -401,6 +419,7 @@ const theoryCompleted = useMemo(() => {
     setScoreResult(null);
     setRunCodeResult(null);
     setExecutionLog(null);
+    setSqlRunResult(null);
     setIsRunningTests(true);
 
     try {
@@ -431,6 +450,7 @@ const theoryCompleted = useMemo(() => {
     setAgentFeedback(null);
     setScoreResult(null);
     setRunCodeResult(null);
+    setSqlRunResult(null);
     setExecutionLog(null);
     setIsRunningTests(true);
     setIsScoring(false);
@@ -484,6 +504,14 @@ const theoryCompleted = useMemo(() => {
       setExecutionLog("Нет активной сессии или SQL");
       return;
     }
+
+    setAgentFeedback(null);
+    setScoreResult(null);
+    setRunCodeResult(null);
+    setSqlRunResult(null);
+    setExecutionLog(null);
+    setIsRunningTests(true);
+
     try {
       const resp = await fetchJson(`/sessions/${sessionId}/tasks/${task.id}/submit_sql`, {
         method: "POST",
@@ -492,53 +520,92 @@ const theoryCompleted = useMemo(() => {
           sql_scenario_id: task.sql_scenario_id || "demo_sql",
         }),
       });
-      setExecutionLog(JSON.stringify(resp, null, 2));
+
+      if (resp && typeof resp === "object") {
+        const payload = resp as Record<string, unknown>;
+        const normalized =
+          payload.result && typeof payload.result === "object"
+            ? (payload.result as SqlRunResult)
+            : null;
+
+        if (normalized) {
+          setSqlRunResult(normalized);
+          setExecutionLog(null);
+        } else {
+          setSqlRunResult(null);
+          setExecutionLog(JSON.stringify(resp, null, 2));
+        }
+      } else {
+        setSqlRunResult(null);
+        setExecutionLog(JSON.stringify(resp, null, 2));
+      }
     } catch (err: unknown) {
+      setSqlRunResult(null);
       setExecutionLog(`Ошибка SQL: ${getErrorMessage(err)}`);
+    } finally {
+      setIsRunningTests(false);
     }
   };
 
   const reviewSqlWithModel = async (task?: Task) => {
-  if (!sessionId || !task) {
-    setExecutionLog("Нет активной сессии или задания");
-    return;
-  }
-  setAgentFeedback(null);
-  setExecutionLog("Запрос к модели: проверка SQL...");
-
-  try {
-    const resp = await fetchJson<PracticeAgentResponse>(`/sessions/${sessionId}/practice/sql`, {
-      method: "POST",
-      body: JSON.stringify({
-        task_id: task.id,
-        sql_scenario_id: task.sql_scenario_id || "",
-        query: sqlDraft,
-      }),
-    });
-
-    setAgentFeedback(resp.reply || "Нет ответа модели");
-    const toolResults = getToolResults(resp);
-    const runSqlTool = findToolResult(toolResults, "run_sql");
-    const scoreTool = findToolResult(toolResults, "score_task");
-
-    if (runSqlTool?.result) {
-      setExecutionLog(JSON.stringify(runSqlTool.result, null, 2));
-    } else {
-      setExecutionLog(null);
+    if (!sessionId || !task) {
+      setExecutionLog("Нет активной сессии или задания");
+      return;
     }
 
-    const scorePayload = getScoreResultPayload(scoreTool?.result);
-    if (scorePayload) {
-      setScoreResult(scorePayload);
-    } else {
+    setAgentFeedback(null);
+    setScoreResult(null);
+    setRunCodeResult(null);
+    setSqlRunResult(null);
+    setExecutionLog(null);
+    setIsRunningTests(true);
+    setIsScoring(false);
+
+    try {
+      const resp = await fetchJson<PracticeAgentResponse>(`/sessions/${sessionId}/practice/sql`, {
+        method: "POST",
+        body: JSON.stringify({
+          task_id: task.id,
+          sql_scenario_id: task.sql_scenario_id || "",
+          query: sqlDraft,
+        }),
+      });
+
+      const toolResults = getToolResults(resp);
+      const runSqlTool = findToolResult(toolResults, "run_sql");
+      const scoreTool = findToolResult(toolResults, "score_task");
+
+      if (runSqlTool?.result && typeof runSqlTool.result === "object") {
+        setSqlRunResult(runSqlTool.result as SqlRunResult);
+        setExecutionLog(null);
+      } else if (runSqlTool?.result) {
+        setSqlRunResult(null);
+        setExecutionLog(JSON.stringify(runSqlTool.result, null, 2));
+      } else {
+        setSqlRunResult(null);
+        setExecutionLog(null);
+      }
+
+      setIsRunningTests(false);
+      setIsScoring(true);
+
+      const scorePayload = getScoreResultPayload(scoreTool?.result);
+      if (scorePayload) {
+        setScoreResult(scorePayload);
+      } else {
+        setScoreResult(null);
+      }
+
+      setAgentFeedback(resp.reply || "Нет ответа модели");
+    } catch (err: unknown) {
+      setSqlRunResult(null);
       setScoreResult(null);
+      setAgentFeedback(`Ошибка SQL-проверки: ${getErrorMessage(err)}`);
+    } finally {
+      setIsRunningTests(false);
+      setIsScoring(false);
     }
-
-    setAgentFeedback(resp.reply || "Нет ответа модели");
-  } catch (err: unknown) {
-    setAgentFeedback(`Ошибка SQL-проверки: ${getErrorMessage(err)}`);
-  }
-};
+  };
 
   const submitRole = async () => {
     try {
@@ -868,6 +935,9 @@ const goNextTask = () => {
               )}
 
               {currentTask?.type === "sql" && (
+                <SqlSchemaPreview sqlScenario={activeSqlScenario} />
+              )}
+              {currentTask?.type === "sql" && (
                 <div className="editor">
                   <div className="editor-head">
                     <div>
@@ -897,8 +967,9 @@ const goNextTask = () => {
               )}
 
               <RunCodeSummary runCodeResult={runCodeResult} />
+              <RunSqlSummary sqlRunResult={sqlRunResult} />
 
-              {executionLog && !runCodeResult && (
+              {executionLog && !runCodeResult && !sqlRunResult && (
                 <div className="log">
                   <p className="label">Raw результат</p>
                   <pre>{executionLog}</pre>
@@ -919,7 +990,11 @@ const goNextTask = () => {
                     <>
                       <p><strong>Оценка:</strong> {scoreResult.points}/10</p>
                       {scoreResult.comment && (
-                        <ReactMarkdown>{formatScoreComment(scoreResult.comment)}</ReactMarkdown>
+                        <ReactMarkdown>
+                          {currentTask?.type === "sql"
+                            ? formatSqlScoreComment(scoreResult.comment)
+                            : formatCodeScoreComment(scoreResult.comment)}
+                        </ReactMarkdown>
                       )}
                     </>
                   ) : (

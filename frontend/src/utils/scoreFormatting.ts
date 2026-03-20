@@ -17,16 +17,9 @@ function splitImprovementItems(value: string): string[] {
   return [raw];
 }
 
-export function formatScoreComment(comment: string): string {
+function buildFormattedComment(comment: string, headers: string[], mainHeaders: string[]): string {
   const raw = (comment || "").trim();
   if (!raw) return raw;
-
-  const headers = [
-    "Корректность:",
-    "Качество кода:",
-    "Сложность и эффективность:",
-    "Что можно улучшить:",
-  ];
 
   const lines = raw
     .split("\n")
@@ -54,11 +47,7 @@ export function formatScoreComment(comment: string): string {
   const md: string[] = [];
   const bodyBullets: string[] = [];
 
-  for (const header of [
-    "Корректность:",
-    "Качество кода:",
-    "Сложность и эффективность:",
-  ]) {
+  for (const header of mainHeaders) {
     const value = sections.get(header);
     if (!value) continue;
     bodyBullets.push(`- **${header.replace(":", "")}:** ${value}`);
@@ -84,3 +73,36 @@ export function formatScoreComment(comment: string): string {
   return md.join("\n\n");
 }
 
+export function formatCodeScoreComment(comment: string): string {
+  const headers = [
+    "Корректность:",
+    "Качество кода:",
+    "Сложность и эффективность:",
+    "Что можно улучшить:",
+  ];
+
+  const mainHeaders = [
+    "Корректность:",
+    "Качество кода:",
+    "Сложность и эффективность:",
+  ];
+
+  return buildFormattedComment(comment, headers, mainHeaders);
+}
+
+export function formatSqlScoreComment(comment: string): string {
+  const headers = [
+    "Корректность:",
+    "Качество решения:",
+    "Работа с SQL:",
+    "Что можно улучшить:",
+  ];
+
+  const mainHeaders = [
+    "Корректность:",
+    "Качество решения:",
+    "Работа с SQL:",
+  ];
+
+  return buildFormattedComment(comment, headers, mainHeaders);
+}

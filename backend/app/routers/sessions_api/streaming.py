@@ -14,6 +14,7 @@ from .prompting import (_analyze_candidate_message, _build_system_prompt, _extra
 from .router import logger
 from .state import (_control_state, _conversation_snapshot, _convert_history, _first_practice_task, _get_task_by_id, _theory_is_complete, _theory_summary_text,)
 from .tool_call_utils import (attach_inline_tool_call as _attach_inline_tool_call, is_score_task_error as _is_score_task_error, looks_like_tool_dump as _looks_like_tool_dump,)
+from .tool_errors import (THEORY_COMMENT_EMPTY, THEORY_COMMENT_TOO_SHORT, THEORY_COMMENT_TRUNCATED,)
 from .tools import TOOLS
 
 def _sanitize_streamed_text(
@@ -63,10 +64,11 @@ def _is_retryable_theory_score_error(
     if result.get("ok") is True:
         return False
 
-    err = (result.get("error") or "").strip().lower()
+    err = (result.get("error") or "").strip()
     return err in {
-        "theory comment must contain 2-3 complete sentences.".lower(),
-        "comment is required and must be non-empty".lower(),
+        THEORY_COMMENT_EMPTY,
+        THEORY_COMMENT_TOO_SHORT,
+        THEORY_COMMENT_TRUNCATED,
     }
 
 def _score_task_only_tools() -> list[dict[str, Any]]:
@@ -530,15 +532,25 @@ def stream_model(session_id: str):
                     "role": "system",
                     "content": (
                         f"Предыдущий промежуточный score_task для theory-вопроса "
-                        f"question_index={pending_question_index} был отклонён.\n"
-                        f"Сейчас нужно снова вызвать score_task и исправить только comment.\n"
-                        f"Требования:\n"
-                        f"- is_final=false\n"
+                        f"question_index={pending_question_index} был отклонён backend.\n"
+                        f"Причина: {result.get('error') or 'unknown error'}\n\n"
+                        f"Сейчас нужно НЕМЕДЛЕННО повторить только tool score_task.\n"
+                        f"Исправь только поле comment.\n\n"
+                        f"Не меняй:\n"
                         f"- task_id={current_task_id}\n"
                         f"- question_index={pending_question_index}\n"
-                        f"- сохранить корректный points\n"
-                        f"- comment должен быть содержательным, не слишком коротким и завершённым по смыслу; обычно это 2-3 предложения по-русски\n"
-                        f"- не пиши обычный текст"
+                        f"- is_final=false\n"
+                        f"- points должны остаться корректными для этого ответа\n\n"
+                        f"Требования к comment:\n"
+                        f"- 1-3 законченных предложения\n"
+                        f"- не короче нормального содержательного комментария\n"
+                        f"- без обрыва на двоеточии, тире, запятой или точке с запятой\n"
+                        f"- кратко объясни, почему выставлены эти баллы\n\n"
+                        f"Нельзя:\n"
+                        f"- писать обычный текст кандидату\n"
+                        f"- задавать следующий вопрос\n"
+                        f"- вызывать другой инструмент\n\n"
+                        f"Верни только один tool call score_task."
                     ),
                 })
 

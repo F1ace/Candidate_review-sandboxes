@@ -8,6 +8,7 @@ from ... import models
 from ...services import sandbox, web_search, sql_runner
 from ...services.rag import search_documents
 from .state import _get_task_by_id
+from .tool_errors import (THEORY_COMMENT_EMPTY, THEORY_COMMENT_TOO_SHORT, THEORY_COMMENT_TRUNCATED,)
 
 def _build_tests_payload(task: models.Task) -> list[dict[str, Any]]:
     extra = task.extra_config or {}
@@ -325,19 +326,15 @@ def _apply_score(session: models.Session, args: dict[str, Any], db: Session) -> 
     points = float(int(round(points)))
     comment = (args.get("comment") or "").strip()
     if not comment:
-        return {"ok": False, "error": "comment is required and must be non-empty"}
+        return {"ok": False, "error": THEORY_COMMENT_EMPTY}
 
     if task_type == "theory":
-        # Достаточно мягкая, но полезная защита:
-        # - не пускаем слишком короткие комментарии;
-        # - не пускаем явно оборванные хвосты;
-        # - не требуем строго 2-3 предложения, потому что модель часто пишет
-        #   одно длинное, но нормальное законченное пояснение.
         if len(comment) < 45:
-            return {
-                "ok": False,
-                "error": "Theory comment is too short; provide a fuller explanation.",
-            }
+            return {"ok": False, "error": THEORY_COMMENT_TOO_SHORT,}
+        
+        trimmed = comment.rstrip()
+        if trimmed.endswith(("—", "-", ":", ",", ";")):
+            return {"ok": False, "error": THEORY_COMMENT_TRUNCATED}
 
         # Похоже на оборванный комментарий: заканчивается на служебный обрывок
         # или на очень короткий хвост без знака завершения.
@@ -354,7 +351,7 @@ def _apply_score(session: models.Session, args: dict[str, Any], db: Session) -> 
         if suspicious_tail and not has_terminal_punctuation:
             return {
                 "ok": False,
-                "error": "Theory comment looks truncated; provide a complete comment.",
+                "error": THEORY_COMMENT_TRUNCATED,
             }
     if task_type in {"coding", "sql"}:
         comment_error = _validate_practice_comment(comment, task_type)

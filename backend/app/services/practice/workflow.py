@@ -96,6 +96,8 @@ def normalize_practice_comment(
     max_points: int,
 ) -> str:
     raw = (raw_comment or "").strip()
+    if not raw:
+        return ""
 
     sections_order = [
         "Корректность:",
@@ -104,34 +106,42 @@ def normalize_practice_comment(
         "Что можно улучшить:",
     ]
 
-    defaults = {
-        "Корректность:": "Корректность:",
-        "Качество кода:": "Качество кода:",
-        "Сложность и эффективность:": "Сложность и эффективность:",
-        "Что можно улучшить:": "Что можно улучшить:",
-    }
-
-    if not raw:
-        return "\n".join(defaults[h] for h in sections_order)
-
     lines = [line.strip() for line in raw.splitlines() if line.strip()]
-    found: dict[str, str] = {}
+    found: dict[str, list[str]] = {}
+    current_header: str | None = None
 
     for line in lines:
+        matched_header = None
+
         for header in sections_order:
             if line.startswith(header):
-                found[header] = line
+                matched_header = header
+                tail = line[len(header):].strip()
+                found.setdefault(header, [])
+                if tail:
+                    found[header].append(tail)
+                current_header = header
                 break
 
-    if not found:
-        return "\n".join([
-            f"Корректность: {raw}",
-            defaults["Качество кода:"],
-            defaults["Сложность и эффективность:"],
-            defaults["Что можно улучшить:"],
-        ])
+        if matched_header is not None:
+            continue
 
-    return "\n".join(found.get(h, defaults[h]) for h in sections_order)
+        if current_header is not None:
+            found.setdefault(current_header, []).append(line)
+
+    if not found:
+        return raw
+
+    normalized_lines: list[str] = []
+    for header in sections_order:
+        if header in found:
+            value = " ".join(found[header]).strip()
+            if value:
+                normalized_lines.append(f"{header} {value}")
+            else:
+                normalized_lines.append(header)
+
+    return "\n".join(normalized_lines).strip()
 
 @dataclass
 class CodeWorkflowState:

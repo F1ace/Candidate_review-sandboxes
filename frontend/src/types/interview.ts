@@ -62,6 +62,28 @@ export type SandboxRunResult = {
   test_results?: SandboxTestResult[];
 };
 
+export type SqlRunResultPayload = {
+  success?: boolean;
+  error?: string | null;
+  columns?: string[];
+  rows?: unknown[][];
+};
+
+export type SqlRunResult = {
+  ok?: boolean;
+  task_id?: string;
+  sql_scenario_id?: string;
+  result?: SqlRunResultPayload;
+};
+
+export type SqlScenario = {
+  id: number;
+  name: string;
+  description?: string | null;
+  db_schema?: string | null;
+  reference_solutions?: Record<string, unknown> | null;
+};
+
 export type ScoreResultPayload = {
   points: number;
   comment?: string;
