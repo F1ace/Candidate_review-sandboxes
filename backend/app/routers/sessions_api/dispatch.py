@@ -6,7 +6,6 @@ from sqlalchemy.orm import Session
 
 from ... import models
 from ...services import sandbox, web_search, sql_runner
-from ...services.rag import search_documents
 from .state import _get_task_by_id
 from .tool_errors import (THEORY_COMMENT_EMPTY, THEORY_COMMENT_TOO_SHORT, THEORY_COMMENT_TRUNCATED,)
 
