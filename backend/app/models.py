@@ -45,9 +45,44 @@ class Document(Base):
     rag_corpus_id: Mapped[int] = mapped_column(ForeignKey("rag_corpora.id"), nullable=False, index=True)
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    content_type: Mapped[Optional[str]] = mapped_column(String(255))
+    storage_bucket: Mapped[Optional[str]] = mapped_column(String(255))
+    object_key: Mapped[Optional[str]] = mapped_column(String(512))
+    size_bytes: Mapped[Optional[int]] = mapped_column(Integer)
+    checksum_sha256: Mapped[Optional[str]] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32), default="ready", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    ingested_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     meta: Mapped[Optional[dict[str, Any]]] = mapped_column("metadata", JSON, default={})
 
     corpus: Mapped["RagCorpus"] = relationship("RagCorpus", back_populates="documents")
+    chunks: Mapped[list["DocumentChunk"]] = relationship(
+        "DocumentChunk",
+        back_populates="document",
+        cascade="all, delete-orphan",
+    )
+
+
+class DocumentChunk(Base):
+    __tablename__ = "document_chunks"
+    __table_args__ = (UniqueConstraint("document_id", "chunk_index", name="uq_document_chunk"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    content_length: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    token_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    char_start: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    char_end: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    meta: Mapped[Optional[dict[str, Any]]] = mapped_column("metadata", JSON, default={})
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    document: Mapped["Document"] = relationship("Document", back_populates="chunks")
 
 
 class SqlScenario(Base):
@@ -104,6 +139,11 @@ class Session(Base):
     role: Mapped["Role"] = relationship("Role")
     messages: Mapped[list["Message"]] = relationship("Message", back_populates="session", cascade="all, delete-orphan")
     score_entries: Mapped[list["Score"]] = relationship("Score", back_populates="session", cascade="all, delete-orphan")
+    fact_validations: Mapped[list["TheoryFactValidation"]] = relationship(
+        "TheoryFactValidation",
+        back_populates="session",
+        cascade="all, delete-orphan",
+    )
 
 
 class Message(Base):
@@ -116,6 +156,32 @@ class Message(Base):
     task_id: Mapped[Optional[str]] = mapped_column(String(128))
 
     session: Mapped["Session"] = relationship("Session", back_populates="messages")
+    fact_validations: Mapped[list["TheoryFactValidation"]] = relationship(
+        "TheoryFactValidation",
+        back_populates="candidate_message",
+    )
+
+
+class TheoryFactValidation(Base):
+    __tablename__ = "theory_fact_validations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False, index=True)
+    task_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    question_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    candidate_message_id: Mapped[int] = mapped_column(
+        ForeignKey("messages.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    query: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="completed", nullable=False)
+    result_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    evidence: Mapped[Optional[list[dict[str, Any]]]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    session: Mapped["Session"] = relationship("Session", back_populates="fact_validations")
+    candidate_message: Mapped["Message"] = relationship("Message", back_populates="fact_validations")
 
 
 class Score(Base):

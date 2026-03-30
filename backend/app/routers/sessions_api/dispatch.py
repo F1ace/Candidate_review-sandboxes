@@ -6,6 +6,12 @@ from sqlalchemy.orm import Session
 
 from ... import models
 from ...services import sandbox, web_search, sql_runner
+from ...services.rag import search_document_chunks
+from ...services.theory_rag import (
+    find_candidate_answer_message,
+    get_existing_validation,
+    theory_rag_required,
+)
 from .state import _get_task_by_id
 from .tool_errors import (THEORY_COMMENT_EMPTY, THEORY_COMMENT_TOO_SHORT, THEORY_COMMENT_TRUNCATED,)
 
@@ -153,14 +159,15 @@ def _dispatch_tool_call(session: models.Session, tc: dict[str, Any], db: Session
                 return {"ok": False, "error": "RAG corpus is not configured for this scenario"}
 
             top_k = int(args.get("top_k") or 5)
+            results = search_document_chunks(
+                db=db,
+                rag_corpus_id=corpus_id,
+                query=query,
+                top_k=top_k,
+            )
             return {
                 "ok": True,
-                "results": search_documents(
-                    db=db,
-                    rag_corpus_id=corpus_id,
-                    query=query,
-                    top_k=top_k,
-                ),
+                "results": [item.model_dump() for item in results],
             }
 
         if name == "run_code":
@@ -375,6 +382,31 @@ def _apply_score(session: models.Session, args: dict[str, Any], db: Session) -> 
             )
             if readiness_error:
                 return {"ok": False, "error": readiness_error}
+
+            if theory_rag_required(session, db):
+                candidate_message = find_candidate_answer_message(session, db, task, question_index)
+                if not candidate_message:
+                    return {
+                        "ok": False,
+                        "error": f"Candidate has not answered question_index={question_index} yet.",
+                    }
+
+                validation = get_existing_validation(
+                    session_id=session.id,
+                    task_id=task_id,
+                    question_index=question_index,
+                    candidate_message_id=candidate_message.id,
+                    db=db,
+                )
+                if not validation:
+                    return {
+                        "ok": False,
+                        "error_code": "theory_rag_validation_required",
+                        "error": (
+                            "Theory answer must be validated against scenario documents before scoring. "
+                            "Run rag_search first."
+                        ),
+                    }
         else:
             if not _theory_ready_for_scoring(session, db, task):
                 return {"ok": False, "error": "Theory block is not finished yet. Ask all questions first."}

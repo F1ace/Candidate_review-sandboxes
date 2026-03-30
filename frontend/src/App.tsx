@@ -111,6 +111,7 @@ function App() {
     slug: "",
     description: "",
     difficulty: "junior",
+    rag_corpus_id: "",
     tasks: JSON.stringify(defaultTasks, null, 2),
   });
   const [loading, setLoading] = useState(false);
@@ -630,6 +631,7 @@ const theoryCompleted = useMemo(() => {
         slug: adminScenarioDraft.slug,
         description: adminScenarioDraft.description,
         difficulty: adminScenarioDraft.difficulty,
+        rag_corpus_id: adminScenarioDraft.rag_corpus_id ? Number(adminScenarioDraft.rag_corpus_id) : null,
         tasks: parsedTasks,
       };
       const resp = await fetchJson<Scenario>("/scenarios", {
@@ -1053,6 +1055,11 @@ const goNextTask = () => {
                 placeholder="Описание"
                 value={adminScenarioDraft.description}
                 onChange={(e) => setAdminScenarioDraft({ ...adminScenarioDraft, description: e.target.value })}
+              />
+              <input
+                placeholder="RAG Corpus ID"
+                value={adminScenarioDraft.rag_corpus_id}
+                onChange={(e) => setAdminScenarioDraft({ ...adminScenarioDraft, rag_corpus_id: e.target.value })}
               />
               <textarea
                 placeholder="tasks в стандартизированном формате"

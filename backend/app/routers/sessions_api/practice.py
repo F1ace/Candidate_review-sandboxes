@@ -91,7 +91,10 @@ def _practice_sql_agent_review(
     if session.scenario.rag_corpus_id:
         rag_available = (
             db.query(models.Document)
-            .filter_by(rag_corpus_id=session.scenario.rag_corpus_id)
+            .filter(
+                models.Document.rag_corpus_id == session.scenario.rag_corpus_id,
+                models.Document.status == "ready",
+            )
             .count() > 0
         )
 

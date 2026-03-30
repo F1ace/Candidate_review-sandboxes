@@ -8,6 +8,7 @@ from fastapi.responses import StreamingResponse
 from ... import models
 from ...database import SessionLocal
 from ...services.lm_client import lm_client
+from ...services.theory_rag import ensure_theory_validation, format_theory_validation_message
 from .dispatch import _dispatch_tool_call, _aggregate_theory_intermediate_scores
 from .practice import _score_feedback
 from .prompting import (_analyze_candidate_message, _build_system_prompt, _extract_inline_tool_call, _strip_intro, _strip_think,)
@@ -70,6 +71,12 @@ def _is_retryable_theory_score_error(
         THEORY_COMMENT_TOO_SHORT,
         THEORY_COMMENT_TRUNCATED,
     }
+
+
+def _is_theory_rag_validation_error(result: dict[str, Any] | None) -> bool:
+    if not isinstance(result, dict):
+        return False
+    return (result.get("error_code") or "") == "theory_rag_validation_required"
 
 def _score_task_only_tools() -> list[dict[str, Any]]:
     return [
@@ -405,7 +412,10 @@ def stream_model(session_id: str):
     if session.scenario.rag_corpus_id:
         rag_available = (
             base_db.query(models.Document)
-            .filter_by(rag_corpus_id=session.scenario.rag_corpus_id)
+            .filter(
+                models.Document.rag_corpus_id == session.scenario.rag_corpus_id,
+                models.Document.status == "ready",
+            )
             .count() > 0
         )
 
@@ -429,6 +439,18 @@ def stream_model(session_id: str):
         base_db.commit()
         base_db.refresh(session)
 
+    theory_validation_message = ""
+    if needs_intermediate_score and current_task_id and pending_question_index:
+        task_obj = _get_task_by_id(session.scenario, current_task_id)
+        if task_obj and task_obj.get("type") == "theory":
+            validation = ensure_theory_validation(
+                session=session,
+                db=base_db,
+                task=task_obj,
+                question_index=pending_question_index,
+            )
+            theory_validation_message = format_theory_validation_message(validation)
+
     has_model_messages = any(m.sender == "model" for m in history_db)
     if not has_model_messages:
         base_messages.append({
@@ -443,6 +465,8 @@ def stream_model(session_id: str):
     try:
         if needs_intermediate_score and current_task_id and pending_question_index:
             request_messages = list(base_messages)
+            if theory_validation_message:
+                request_messages.append({"role": "system", "content": theory_validation_message})
             request_messages.append({
                 "role": "system",
                 "content": (
@@ -583,6 +607,61 @@ def stream_model(session_id: str):
                     # заменяем исходный неуспешный результат результатом retry
                     result = retry_result
                     tc = retry_tc
+
+            if (
+                fname == "score_task"
+                and needs_intermediate_score
+                and current_task_id
+                and pending_question_index
+                and _is_theory_rag_validation_error(result)
+            ):
+                task_obj = _get_task_by_id(session.scenario, current_task_id)
+                if task_obj and task_obj.get("type") == "theory":
+                    validation = ensure_theory_validation(
+                        session=session,
+                        db=base_db,
+                        task=task_obj,
+                        question_index=pending_question_index,
+                    )
+                    validation_message = format_theory_validation_message(validation)
+                    retry_messages = list(stream_messages)
+                    if validation_message:
+                        retry_messages.append({"role": "system", "content": validation_message})
+                    retry_messages.append(
+                        {
+                            "role": "system",
+                            "content": (
+                                "Предыдущий промежуточный score_task был отклонён, потому что перед оценкой "
+                                "не было подтверждения по документам сценария. Retrieval уже выполнен. "
+                                "Верни только один tool call score_task для этого же question_index."
+                            ),
+                        }
+                    )
+                    retry_resp = lm_client.chat(
+                        retry_messages,
+                        tools=_score_task_only_tools(),
+                        tool_choice="required",
+                    )
+                    retry_assistant_msg = retry_resp["choices"][0]["message"]
+                    retry_assistant_msg, retry_tool_calls = _coerce_inline_tool_call(
+                        retry_assistant_msg,
+                        allow_tools=True,
+                        tool_call_id="inline_toolcall_retry_theory_rag",
+                    )
+                    retry_assistant_msg, retry_tool_calls = _force_pending_theory_intermediate_score(
+                        retry_assistant_msg,
+                        task_id=current_task_id,
+                        question_index=pending_question_index,
+                    )
+                    if retry_tool_calls:
+                        retry_tc = retry_tool_calls[0]
+                        try:
+                            retry_result = _dispatch_tool_call(session, retry_tc, base_db)
+                        except Exception as e:
+                            logger.exception("Retry tool failed: %s", fname)
+                            retry_result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+                        result = retry_result
+                        tc = retry_tc
 
             if fname == "score_task":
                 score_result_payload = result

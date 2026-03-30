@@ -6,6 +6,11 @@ from sqlalchemy.orm import Session
 from ... import models, schemas
 from ...database import get_db
 from ...services import sandbox, web_search, sql_runner, sql_evaluator
+from ...services.theory_rag import (
+    find_candidate_answer_message,
+    get_existing_validation,
+    theory_rag_required,
+)
 from .practice import _practice_agent_review, _practice_sql_agent_review
 from .router import router
 from .schemas import PracticeCodeRequest, PracticeSqlRequest
@@ -105,6 +110,28 @@ def score_task(session_id: str, payload: schemas.ScoreCreate, db: Session = Depe
             if validation_error:
                 raise HTTPException(status_code=400, detail=validation_error)
             question_index = int(question_index)
+            if theory_rag_required(session, db):
+                candidate_message = find_candidate_answer_message(session, db, task, question_index)
+                if not candidate_message:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Candidate has not answered question_index={question_index} yet.",
+                    )
+                validation = get_existing_validation(
+                    session_id=session.id,
+                    task_id=payload.task_id,
+                    question_index=question_index,
+                    candidate_message_id=candidate_message.id,
+                    db=db,
+                )
+                if not validation:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "Theory answer must be validated against scenario documents before scoring. "
+                            "Run rag_search first."
+                        ),
+                    )
         else:
             if not _theory_ready_for_scoring(session, db, task):
                 raise HTTPException(status_code=400, detail="Theory block is not finished yet. Ask all questions first.")

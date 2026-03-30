@@ -179,7 +179,15 @@ def run_practice_code_review(
 
     rag_available = False
     if session.scenario.rag_corpus_id:
-        rag_available = db.query(models.Document).filter_by(rag_corpus_id=session.scenario.rag_corpus_id).count() > 0
+        rag_available = (
+            db.query(models.Document)
+            .filter(
+                models.Document.rag_corpus_id == session.scenario.rag_corpus_id,
+                models.Document.status == "ready",
+            )
+            .count()
+            > 0
+        )
 
     system_prompt = build_system_prompt(session, rag_available)
     snapshot = conversation_snapshot(session, history_db)

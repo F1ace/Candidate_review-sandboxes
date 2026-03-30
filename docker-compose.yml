@@ -19,6 +19,20 @@ services:
       retries: 10
       start_period: 10s
 
+  minio:
+    image: minio/minio:RELEASE.2025-02-18T16-25-55Z
+    container_name: reviewer-minio
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    restart: unless-stopped
+
   backend:
     build:
       context: ./backend
@@ -31,6 +45,11 @@ services:
       SANDBOX_SQL_URL: http://sandbox-sql:8002/run_sql
       LM_STUDIO_URL: http://host.docker.internal:1234/v1/chat/completions
       LM_MODEL: openai/gpt-oss-20b
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_BUCKET: rag-documents
+      MINIO_SECURE: "false"
       ALLOW_ORIGINS: "*"
     volumes:
       - ./backend/app:/app/app
@@ -38,6 +57,7 @@ services:
       - ./backend/alembic.ini:/app/alembic.ini
     depends_on:
       - db
+      - minio
       - sandbox-code
       - sandbox-sql
 
@@ -57,3 +77,4 @@ services:
 
 volumes:
   postgres_data:
+  minio_data:

@@ -97,6 +97,14 @@ class DocumentOut(BaseModel):
     rag_corpus_id: int
     filename: str
     content: str
+    content_type: Optional[str] = None
+    storage_bucket: Optional[str] = None
+    object_key: Optional[str] = None
+    size_bytes: Optional[int] = None
+    checksum_sha256: Optional[str] = None
+    status: str
+    created_at: datetime
+    ingested_at: Optional[datetime] = None
     meta: Optional[dict[str, Any]] = Field(default=None, serialization_alias="metadata")
 
     class Config:
@@ -198,9 +206,11 @@ class RagSearchRequest(BaseModel):
 
 class RagSearchResult(BaseModel):
     document_id: int
+    chunk_id: int
     filename: str
     snippet: str
     score: float
+    metadata: Optional[dict[str, Any]] = None
 
 
 class WebSearchRequest(BaseModel):

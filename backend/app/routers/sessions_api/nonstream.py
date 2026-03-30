@@ -6,6 +6,11 @@ from sqlalchemy.orm import Session
 
 from ... import models
 from ...services.lm_client import lm_client
+from ...services.theory_rag import (
+    detect_current_theory_question_index,
+    ensure_theory_validation,
+    format_theory_validation_message,
+)
 from .dispatch import _dispatch_tool_call, _aggregate_theory_intermediate_scores
 from .practice import _score_feedback
 from .prompting import _build_system_prompt, _extract_inline_tool_call
@@ -68,7 +73,15 @@ def call_model(session_id: str, db: Session):
     )
     rag_available = False
     if session.scenario.rag_corpus_id:
-        rag_available = db.query(models.Document).filter_by(rag_corpus_id=session.scenario.rag_corpus_id).count() > 0
+        rag_available = (
+            db.query(models.Document)
+            .filter(
+                models.Document.rag_corpus_id == session.scenario.rag_corpus_id,
+                models.Document.status == "ready",
+            )
+            .count()
+            > 0
+        )
     system_prompt = _build_system_prompt(session, rag_available)
     snapshot = _conversation_snapshot(session, history_db)
     messages = [
@@ -76,6 +89,20 @@ def call_model(session_id: str, db: Session):
         {"role": "system", "content": snapshot},
     ]
     messages.extend(_convert_history(history_db))
+
+    current_task = _get_task_by_id(session.scenario, session.current_task_id or "")
+    if rag_available and current_task and current_task.get("type") == "theory":
+        current_question_index = detect_current_theory_question_index(session, db, current_task)
+        if current_question_index:
+            validation = ensure_theory_validation(
+                session=session,
+                db=db,
+                task=current_task,
+                question_index=current_question_index,
+            )
+            validation_message = format_theory_validation_message(validation)
+            if validation_message:
+                messages.append({"role": "system", "content": validation_message})
 
     has_model_messages = any(m.sender == "model" for m in history_db)
 

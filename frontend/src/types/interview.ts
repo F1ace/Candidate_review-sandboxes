@@ -27,6 +27,7 @@ export type Scenario = {
   slug: string;
   description?: string;
   difficulty?: string;
+  rag_corpus_id?: number | null;
   tasks?: Task[];
 };
 
