@@ -8,6 +8,8 @@ import { SectionHeader } from "./components/SectionHeader";
 import type {
   Message,
   PracticeAgentResponse,
+  RagCorpus,
+  RagDocument,
   Role,
   Scenario,
   SandboxRunResult,
@@ -59,6 +61,16 @@ type SubmitCodeResponse = {
   result?: SandboxRunResult;
 };
 
+type AdminCorpusDraft = {
+  name: string;
+  description: string;
+};
+
+type DocumentUploadDraft = {
+  corpus_id: string;
+  file: File | null;
+};
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
@@ -83,6 +95,29 @@ const getScoreResultPayload = (rawResult: unknown): ScoreResultPayload | null =>
   };
 };
 
+const buildScenarioMaterialDrafts = (items: Scenario[]): Record<number, string> =>
+  items.reduce<Record<number, string>>((acc, scenario) => {
+    acc[scenario.id] = scenario.rag_corpus_id ? String(scenario.rag_corpus_id) : "";
+    return acc;
+  }, {});
+
+const formatBytes = (value?: number | null): string => {
+  if (!value || value <= 0) return "0 B";
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+};
+
+const formatDateTime = (value?: string | null): string => {
+  if (!value) return "—";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return new Intl.DateTimeFormat("ru-RU", {
+    dateStyle: "short",
+    timeStyle: "short",
+  }).format(parsed);
+};
+
 function App() {
   const [view, setView] = useState<View>("landing");
   const [roles, setRoles] = useState<Role[]>([]);
@@ -105,6 +140,7 @@ function App() {
   const [isRunningTests, setIsRunningTests] = useState(false);
   const [isScoring, setIsScoring] = useState(false);
   const [adminRoleDraft, setAdminRoleDraft] = useState({ name: "", slug: "", description: "" });
+  const [adminCorpusDraft, setAdminCorpusDraft] = useState<AdminCorpusDraft>({ name: "", description: "" });
   const [adminScenarioDraft, setAdminScenarioDraft] = useState({
     role_id: "",
     name: "",
@@ -114,6 +150,17 @@ function App() {
     rag_corpus_id: "",
     tasks: JSON.stringify(defaultTasks, null, 2),
   });
+  const [corpora, setCorpora] = useState<RagCorpus[]>([]);
+  const [documentsByCorpus, setDocumentsByCorpus] = useState<Record<number, RagDocument[]>>({});
+  const [selectedCorpusId, setSelectedCorpusId] = useState<number | null>(null);
+  const [documentUploadDraft, setDocumentUploadDraft] = useState<DocumentUploadDraft>({
+    corpus_id: "",
+    file: null,
+  });
+  const [uploadInputKey, setUploadInputKey] = useState(0);
+  const [uploadingDocument, setUploadingDocument] = useState(false);
+  const [updatingScenarioId, setUpdatingScenarioId] = useState<number | null>(null);
+  const [scenarioMaterialDrafts, setScenarioMaterialDrafts] = useState<Record<number, string>>({});
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [currentTaskIndex, setCurrentTaskIndex] = useState(0);
@@ -123,6 +170,22 @@ function App() {
   const selectedScenarioObj = useMemo(
     () => scenarios.find((s) => s.id === selectedScenario),
     [selectedScenario, scenarios],
+  );
+  const corporaById = useMemo(
+    () => new Map(corpora.map((corpus) => [corpus.id, corpus])),
+    [corpora],
+  );
+  const rolesById = useMemo(
+    () => new Map(roles.map((role) => [role.id, role])),
+    [roles],
+  );
+  const selectedCorpus = useMemo(
+    () => corpora.find((corpus) => corpus.id === selectedCorpusId) ?? null,
+    [corpora, selectedCorpusId],
+  );
+  const selectedCorpusDocuments = useMemo(
+    () => (selectedCorpusId ? documentsByCorpus[selectedCorpusId] ?? [] : []),
+    [documentsByCorpus, selectedCorpusId],
   );
 
   const orderedTasks = useMemo(() => selectedScenarioObj?.tasks ?? [], [selectedScenarioObj]);
@@ -149,23 +212,56 @@ const theoryCompleted = useMemo(() => {
   return orderedTasks.findIndex((t) => t.type !== "theory");
   }, [orderedTasks]);
 
+  const loadCorpusDocuments = async (corpusId: number): Promise<RagDocument[]> => {
+    try {
+      return await fetchJson<RagDocument[]>(`/rag/corpora/${corpusId}/documents`);
+    } catch (err) {
+      console.error(`Не удалось загрузить документы для корпуса ${corpusId}`, err);
+      return [];
+    }
+  };
+
   useEffect(() => {
     const bootstrap = async () => {
       try {
-        const [rolesResp, scenariosResp, sqlScenariosResp] = await Promise.all([
+        const [rolesResp, scenariosResp, sqlScenariosResp, corporaResp] = await Promise.all([
           fetchJson<Role[]>("/roles").catch(() => [] as Role[]),
           fetchJson<Scenario[]>("/scenarios").catch(() => [] as Scenario[]),
           fetchJson<SqlScenario[]>("/sql-scenarios").catch(() => [] as SqlScenario[]),
+          fetchJson<RagCorpus[]>("/rag/corpora").catch(() => [] as RagCorpus[]),
         ]);
 
-        setRoles(rolesResp.length ? rolesResp : sampleRoles());
-        setScenarios(scenariosResp.length ? scenariosResp : sampleScenarios());
+        const nextRoles = rolesResp.length ? rolesResp : sampleRoles();
+        const nextScenarios = scenariosResp.length ? scenariosResp : sampleScenarios();
+
+        setRoles(nextRoles);
+        setScenarios(nextScenarios);
         setSqlScenarios(sqlScenariosResp);
+        setCorpora(corporaResp);
+        setScenarioMaterialDrafts(buildScenarioMaterialDrafts(nextScenarios));
+
+        if (corporaResp.length) {
+          const corpusDocuments = await Promise.all(
+            corporaResp.map(async (corpus) => [corpus.id, await loadCorpusDocuments(corpus.id)] as const),
+          );
+          setDocumentsByCorpus(Object.fromEntries(corpusDocuments));
+          setSelectedCorpusId(corporaResp[0].id);
+          setDocumentUploadDraft({ corpus_id: String(corporaResp[0].id), file: null });
+        } else {
+          setDocumentsByCorpus({});
+          setSelectedCorpusId(null);
+          setDocumentUploadDraft({ corpus_id: "", file: null });
+        }
       } catch (err) {
         console.error(err);
         setRoles(sampleRoles());
         setScenarios(sampleScenarios());
         setSqlScenarios([]);
+        setCorpora([]);
+        setDocumentsByCorpus({});
+        setSelectedCorpusId(null);
+        setDocumentUploadDraft({ corpus_id: "", file: null });
+        setScenarioMaterialDrafts(buildScenarioMaterialDrafts(sampleScenarios()));
       }
     };
 
@@ -178,6 +274,25 @@ const theoryCompleted = useMemo(() => {
       if (first) setSelectedScenario(first.id);
     }
   }, [selectedRole, selectedScenario, scenarios]);
+
+  useEffect(() => {
+    if (!corpora.length) {
+      if (selectedCorpusId !== null) {
+        setSelectedCorpusId(null);
+      }
+      return;
+    }
+
+    if (!selectedCorpusId || !corpora.some((corpus) => corpus.id === selectedCorpusId)) {
+      setSelectedCorpusId(corpora[0].id);
+    }
+  }, [corpora, selectedCorpusId]);
+
+  useEffect(() => {
+    if (selectedCorpusId && !documentUploadDraft.corpus_id) {
+      setDocumentUploadDraft((prev) => ({ ...prev, corpus_id: String(selectedCorpusId) }));
+    }
+  }, [documentUploadDraft.corpus_id, selectedCorpusId]);
 
   useEffect(() => {
   if (!currentTask) return;
@@ -622,6 +737,28 @@ const theoryCompleted = useMemo(() => {
     }
   };
 
+  const submitCorpus = async () => {
+    if (!adminCorpusDraft.name.trim()) {
+      setStatus("Укажите название материала");
+      return;
+    }
+
+    try {
+      const resp = await fetchJson<RagCorpus>("/rag/corpora", {
+        method: "POST",
+        body: JSON.stringify(adminCorpusDraft),
+      });
+      setCorpora((prev) => [...prev, resp]);
+      setDocumentsByCorpus((prev) => ({ ...prev, [resp.id]: [] }));
+      setSelectedCorpusId(resp.id);
+      setDocumentUploadDraft({ corpus_id: String(resp.id), file: null });
+      setAdminCorpusDraft({ name: "", description: "" });
+      setStatus("Материал создан");
+    } catch (err: unknown) {
+      setStatus(`Ошибка материала: ${getErrorMessage(err)}`);
+    }
+  };
+
   const submitScenario = async () => {
     try {
       const parsedTasks = JSON.parse(adminScenarioDraft.tasks);
@@ -639,9 +776,89 @@ const theoryCompleted = useMemo(() => {
         body: JSON.stringify(payload),
       });
       setScenarios((prev) => [...prev, resp]);
+      setScenarioMaterialDrafts((prev) => ({
+        ...prev,
+        [resp.id]: resp.rag_corpus_id ? String(resp.rag_corpus_id) : "",
+      }));
+      setAdminScenarioDraft((prev) => ({
+        ...prev,
+        name: "",
+        slug: "",
+        description: "",
+        difficulty: "junior",
+        rag_corpus_id: "",
+        tasks: JSON.stringify(defaultTasks, null, 2),
+      }));
       setStatus("Сценарий сохранен");
     } catch (err: unknown) {
       setStatus(`Ошибка сценария: ${getErrorMessage(err)}`);
+    }
+  };
+
+  const uploadDocumentToCorpus = async () => {
+    const targetCorpusId = Number(documentUploadDraft.corpus_id || selectedCorpusId);
+    if (!targetCorpusId) {
+      setStatus("Сначала выберите материал");
+      return;
+    }
+    if (!documentUploadDraft.file) {
+      setStatus("Выберите PDF-файл для загрузки");
+      return;
+    }
+
+    const file = documentUploadDraft.file;
+    const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+    if (!isPdf) {
+      setStatus("Интерфейс принимает только PDF-файлы");
+      return;
+    }
+
+    setUploadingDocument(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const resp = await fetchJson<RagDocument>(`/rag/corpora/${targetCorpusId}/documents/upload`, {
+        method: "POST",
+        body: formData,
+      });
+
+      setDocumentsByCorpus((prev) => ({
+        ...prev,
+        [targetCorpusId]: [resp, ...(prev[targetCorpusId] ?? [])],
+      }));
+      setSelectedCorpusId(targetCorpusId);
+      setDocumentUploadDraft({ corpus_id: String(targetCorpusId), file: null });
+      setUploadInputKey((prev) => prev + 1);
+      setStatus("PDF загружен в материал");
+    } catch (err: unknown) {
+      setStatus(`Ошибка загрузки PDF: ${getErrorMessage(err)}`);
+    } finally {
+      setUploadingDocument(false);
+    }
+  };
+
+  const attachCorpusToScenario = async (scenario: Scenario) => {
+    const nextCorpusId = scenarioMaterialDrafts[scenario.id]
+      ? Number(scenarioMaterialDrafts[scenario.id])
+      : null;
+
+    setUpdatingScenarioId(scenario.id);
+    try {
+      const resp = await fetchJson<Scenario>(`/scenarios/${scenario.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ rag_corpus_id: nextCorpusId }),
+      });
+      setScenarios((prev) => prev.map((item) => (item.id === resp.id ? resp : item)));
+      setScenarioMaterialDrafts((prev) => ({
+        ...prev,
+        [resp.id]: resp.rag_corpus_id ? String(resp.rag_corpus_id) : "",
+      }));
+      setStatus(`Материал привязан к сценарию "${resp.name}"`);
+    } catch (err: unknown) {
+      setStatus(`Ошибка привязки материала: ${getErrorMessage(err)}`);
+    } finally {
+      setUpdatingScenarioId(null);
     }
   };
 
@@ -701,7 +918,11 @@ const goNextTask = () => {
                 {sessionId ? "Начать" : "Создать сессию и начать"}
               </button>
             )}
-            <button className="ghost" onClick={() => setView(view === "admin" ? "landing" : "admin")}>
+            <button
+              className="ghost"
+              data-testid="admin-toggle"
+              onClick={() => setView(view === "admin" ? "landing" : "admin")}
+            >
               {view === "admin" ? "Вернуться" : "Открыть админку"}
             </button>
             {status && <span className="pill">{status}</span>}
@@ -765,6 +986,11 @@ const goNextTask = () => {
                       </div>
                       <p className="muted">{scenario.description}</p>
                       <div className="chips">
+                        {scenario.rag_corpus_id && (
+                          <span className="chip chip-secondary">
+                            RAG · {corporaById.get(scenario.rag_corpus_id)?.name || `Материал #${scenario.rag_corpus_id}`}
+                          </span>
+                        )}
                         {(scenario.tasks || []).map((task) => (
                           <span key={task.id} className="chip">
                             {task.type.toUpperCase()} · {task.id}
@@ -1012,62 +1238,319 @@ const goNextTask = () => {
 
       {view === "admin" && (
         <section className="panel">
-          <SectionHeader title="Админка" subtitle="Роли, сценарии, документы" />
-          <div className="grid two-column">
-            <div className="form">
-              <h4>Новая роль</h4>
-              <input
-                placeholder="Название"
-                value={adminRoleDraft.name}
-                onChange={(e) => setAdminRoleDraft({ ...adminRoleDraft, name: e.target.value })}
-              />
-              <input
-                placeholder="Slug"
-                value={adminRoleDraft.slug}
-                onChange={(e) => setAdminRoleDraft({ ...adminRoleDraft, slug: e.target.value })}
-              />
-              <textarea
-                placeholder="Описание"
-                value={adminRoleDraft.description}
-                onChange={(e) => setAdminRoleDraft({ ...adminRoleDraft, description: e.target.value })}
-              />
-              <button onClick={submitRole}>Сохранить роль</button>
+          <SectionHeader title="Админка" subtitle="Материалы, PDF-документы и привязка к сценариям" />
+          <div className="admin-grid">
+            <div className="admin-column">
+              <div className="panel-block form">
+                <h4>Новая роль</h4>
+                <label className="field">
+                  <span className="field-label">Название роли</span>
+                  <input
+                    data-testid="admin-role-name"
+                    placeholder="Например, Backend"
+                    value={adminRoleDraft.name}
+                    onChange={(e) => setAdminRoleDraft({ ...adminRoleDraft, name: e.target.value })}
+                  />
+                </label>
+                <label className="field">
+                  <span className="field-label">Slug</span>
+                  <input
+                    placeholder="backend"
+                    value={adminRoleDraft.slug}
+                    onChange={(e) => setAdminRoleDraft({ ...adminRoleDraft, slug: e.target.value })}
+                  />
+                </label>
+                <label className="field">
+                  <span className="field-label">Описание</span>
+                  <textarea
+                    placeholder="Коротко опишите область интервью"
+                    value={adminRoleDraft.description}
+                    onChange={(e) => setAdminRoleDraft({ ...adminRoleDraft, description: e.target.value })}
+                  />
+                </label>
+                <button type="button" onClick={submitRole}>Сохранить роль</button>
+              </div>
+
+              <div className="panel-block form">
+                <h4>Новый материал</h4>
+                <label className="field">
+                  <span className="field-label">Название материала</span>
+                  <input
+                    data-testid="material-name-input"
+                    placeholder="Например, HTTP handbook"
+                    value={adminCorpusDraft.name}
+                    onChange={(e) => setAdminCorpusDraft({ ...adminCorpusDraft, name: e.target.value })}
+                  />
+                </label>
+                <label className="field">
+                  <span className="field-label">Описание</span>
+                  <textarea
+                    placeholder="Какие знания лежат внутри материала"
+                    value={adminCorpusDraft.description}
+                    onChange={(e) => setAdminCorpusDraft({ ...adminCorpusDraft, description: e.target.value })}
+                  />
+                </label>
+                <button type="button" data-testid="create-material-button" onClick={submitCorpus}>
+                  Создать материал
+                </button>
+              </div>
+
+              <div className="panel-block">
+                <div className="panel-block-head">
+                  <div>
+                    <p className="label">Материалы</p>
+                    <h4>{corpora.length ? `Доступно ${corpora.length}` : "Материалов пока нет"}</h4>
+                    <p className="muted">Выберите материал, чтобы загрузить в него PDF и посмотреть состав.</p>
+                  </div>
+                </div>
+                <div className="resource-list">
+                  {corpora.length ? (
+                    corpora.map((corpus) => (
+                      <button
+                        type="button"
+                        key={corpus.id}
+                        data-testid={`material-card-${corpus.id}`}
+                        className={`resource-card ${selectedCorpusId === corpus.id ? "active" : ""}`}
+                        onClick={() => {
+                          setSelectedCorpusId(corpus.id);
+                          setDocumentUploadDraft((prev) => ({ ...prev, corpus_id: String(corpus.id) }));
+                        }}
+                      >
+                        <div className="resource-card-head">
+                          <strong>{corpus.name}</strong>
+                          <span className="pill small">{documentsByCorpus[corpus.id]?.length ?? 0} док.</span>
+                        </div>
+                        <p className="muted">{corpus.description || "Без описания"}</p>
+                        <p className="muted">ID {corpus.id}</p>
+                      </button>
+                    ))
+                  ) : (
+                    <p className="muted">
+                      Создайте первый материал, затем загрузите в него PDF и прикрепите материал к сценарию.
+                    </p>
+                  )}
+                </div>
+              </div>
             </div>
 
-            <div className="form">
-              <h4>Новый сценарий</h4>
-              <input
-                placeholder="Role ID"
-                value={adminScenarioDraft.role_id}
-                onChange={(e) => setAdminScenarioDraft({ ...adminScenarioDraft, role_id: e.target.value })}
-              />
-              <input
-                placeholder="Название"
-                value={adminScenarioDraft.name}
-                onChange={(e) => setAdminScenarioDraft({ ...adminScenarioDraft, name: e.target.value })}
-              />
-              <input
-                placeholder="Slug"
-                value={adminScenarioDraft.slug}
-                onChange={(e) => setAdminScenarioDraft({ ...adminScenarioDraft, slug: e.target.value })}
-              />
-              <textarea
-                placeholder="Описание"
-                value={adminScenarioDraft.description}
-                onChange={(e) => setAdminScenarioDraft({ ...adminScenarioDraft, description: e.target.value })}
-              />
-              <input
-                placeholder="RAG Corpus ID"
-                value={adminScenarioDraft.rag_corpus_id}
-                onChange={(e) => setAdminScenarioDraft({ ...adminScenarioDraft, rag_corpus_id: e.target.value })}
-              />
-              <textarea
-                placeholder="tasks в стандартизированном формате"
-                value={adminScenarioDraft.tasks}
-                onChange={(e) => setAdminScenarioDraft({ ...adminScenarioDraft, tasks: e.target.value })}
-                className="code"
-              />
-              <button onClick={submitScenario}>Сохранить сценарий</button>
+            <div className="admin-column">
+              <div className="panel-block">
+                <div className="panel-block-head">
+                  <div>
+                    <p className="label">PDF</p>
+                    <h4>{selectedCorpus ? `Документы материала "${selectedCorpus.name}"` : "Выберите материал"}</h4>
+                    <p className="muted">
+                      {selectedCorpus?.description || "После выбора материала здесь появится загрузка PDF и список файлов."}
+                    </p>
+                  </div>
+                </div>
+
+                {selectedCorpus ? (
+                  <>
+                    <div className="form compact-form">
+                      <label className="field">
+                        <span className="field-label">Куда загружать</span>
+                        <select
+                          data-testid="material-select-for-upload"
+                          value={documentUploadDraft.corpus_id || String(selectedCorpus.id)}
+                          onChange={(e) =>
+                            setDocumentUploadDraft((prev) => ({ ...prev, corpus_id: e.target.value }))
+                          }
+                        >
+                          {corpora.map((corpus) => (
+                            <option key={corpus.id} value={corpus.id}>
+                              {corpus.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="field">
+                        <span className="field-label">PDF-файл</span>
+                        <input
+                          key={uploadInputKey}
+                          data-testid="pdf-upload-input"
+                          type="file"
+                          accept=".pdf,application/pdf"
+                          onChange={(e) =>
+                            setDocumentUploadDraft((prev) => ({
+                              ...prev,
+                              file: e.target.files?.[0] ?? null,
+                            }))
+                          }
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        className="primary"
+                        data-testid="upload-pdf-button"
+                        onClick={uploadDocumentToCorpus}
+                        disabled={uploadingDocument}
+                      >
+                        {uploadingDocument ? "Загрузка..." : "Загрузить PDF"}
+                      </button>
+                    </div>
+
+                    <div className="document-list">
+                      {selectedCorpusDocuments.length ? (
+                        selectedCorpusDocuments.map((document) => (
+                          <div key={document.id} className="document-card">
+                            <div className="resource-card-head">
+                              <strong>{document.filename}</strong>
+                              <span className="pill small">{document.status}</span>
+                            </div>
+                            <p className="muted">
+                              {document.content_type || "application/pdf"} · {formatBytes(document.size_bytes)}
+                            </p>
+                            <p className="muted">
+                              Загружен: {formatDateTime(document.ingested_at || document.created_at)}
+                            </p>
+                          </div>
+                        ))
+                      ) : (
+                        <p className="muted">В этом материале пока нет документов.</p>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <p className="muted">Слева пока нет выбранного материала.</p>
+                )}
+              </div>
+
+              <div className="panel-block form">
+                <h4>Новый сценарий</h4>
+                <label className="field">
+                  <span className="field-label">Роль</span>
+                  <select
+                    data-testid="scenario-role-select"
+                    value={adminScenarioDraft.role_id}
+                    onChange={(e) => setAdminScenarioDraft({ ...adminScenarioDraft, role_id: e.target.value })}
+                  >
+                    <option value="">Выберите роль</option>
+                    {roles.map((role) => (
+                      <option key={role.id} value={role.id}>
+                        {role.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="field">
+                  <span className="field-label">Название сценария</span>
+                  <input
+                    placeholder="Например, Backend HTTP theory"
+                    value={adminScenarioDraft.name}
+                    onChange={(e) => setAdminScenarioDraft({ ...adminScenarioDraft, name: e.target.value })}
+                  />
+                </label>
+                <label className="field">
+                  <span className="field-label">Slug</span>
+                  <input
+                    placeholder="backend-http-theory"
+                    value={adminScenarioDraft.slug}
+                    onChange={(e) => setAdminScenarioDraft({ ...adminScenarioDraft, slug: e.target.value })}
+                  />
+                </label>
+                <label className="field">
+                  <span className="field-label">Описание</span>
+                  <textarea
+                    placeholder="Что проверяет сценарий"
+                    value={adminScenarioDraft.description}
+                    onChange={(e) => setAdminScenarioDraft({ ...adminScenarioDraft, description: e.target.value })}
+                  />
+                </label>
+                <label className="field">
+                  <span className="field-label">Сложность</span>
+                  <select
+                    value={adminScenarioDraft.difficulty}
+                    onChange={(e) => setAdminScenarioDraft({ ...adminScenarioDraft, difficulty: e.target.value })}
+                  >
+                    <option value="junior">junior</option>
+                    <option value="middle">middle</option>
+                    <option value="senior">senior</option>
+                  </select>
+                </label>
+                <label className="field">
+                  <span className="field-label">Материал</span>
+                  <select
+                    data-testid="scenario-material-select"
+                    value={adminScenarioDraft.rag_corpus_id}
+                    onChange={(e) => setAdminScenarioDraft({ ...adminScenarioDraft, rag_corpus_id: e.target.value })}
+                  >
+                    <option value="">Без материалов</option>
+                    {corpora.map((corpus) => (
+                      <option key={corpus.id} value={corpus.id}>
+                        {corpus.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="field">
+                  <span className="field-label">Tasks JSON</span>
+                  <textarea
+                    placeholder="tasks в стандартизированном формате"
+                    value={adminScenarioDraft.tasks}
+                    onChange={(e) => setAdminScenarioDraft({ ...adminScenarioDraft, tasks: e.target.value })}
+                    className="code"
+                  />
+                </label>
+                <button type="button" data-testid="create-scenario-button" onClick={submitScenario}>
+                  Сохранить сценарий
+                </button>
+              </div>
+
+              <div className="panel-block">
+                <div className="panel-block-head">
+                  <div>
+                    <p className="label">Привязка</p>
+                    <h4>Существующие сценарии</h4>
+                    <p className="muted">Меняйте связанный материал без ручного ввода corpus ID.</p>
+                  </div>
+                </div>
+
+                <div className="scenario-attachment-list">
+                  {scenarios.length ? (
+                    scenarios.map((scenario) => (
+                      <div key={scenario.id} className="scenario-attachment">
+                        <div>
+                          <strong>{scenario.name}</strong>
+                          <p className="muted">
+                            {rolesById.get(scenario.role_id)?.name || `Role #${scenario.role_id}`} · {scenario.slug}
+                          </p>
+                        </div>
+                        <div className="scenario-attachment-controls">
+                          <select
+                            data-testid={`scenario-attachment-select-${scenario.id}`}
+                            value={scenarioMaterialDrafts[scenario.id] ?? ""}
+                            onChange={(e) =>
+                              setScenarioMaterialDrafts((prev) => ({
+                                ...prev,
+                                [scenario.id]: e.target.value,
+                              }))
+                            }
+                          >
+                            <option value="">Без материалов</option>
+                            {corpora.map((corpus) => (
+                              <option key={corpus.id} value={corpus.id}>
+                                {corpus.name}
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            type="button"
+                            className="ghost"
+                            data-testid={`attach-material-button-${scenario.id}`}
+                            onClick={() => attachCorpusToScenario(scenario)}
+                            disabled={updatingScenarioId === scenario.id}
+                          >
+                            {updatingScenarioId === scenario.id ? "Сохраняю..." : "Привязать"}
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="muted">Сценариев пока нет.</p>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
         </section>

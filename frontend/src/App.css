@@ -209,7 +209,8 @@
 }
 
 textarea,
-input {
+input,
+select {
   border: 1px solid #d9dfe7;
   border-radius: 10px;
   padding: 10px;
@@ -219,7 +220,8 @@ input {
 }
 
 textarea:focus,
-input:focus {
+input:focus,
+select:focus {
   outline: 2px solid #0b3b4b;
 }
 
@@ -274,6 +276,18 @@ input:focus {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.field-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1f2937;
 }
 
 button {
@@ -339,9 +353,115 @@ button:hover {
   gap: 8px;
 }
 
+.chip-secondary {
+  background: #e6f6ff;
+  color: #0b3b4b;
+}
+
+.admin-grid {
+  display: grid;
+  gap: 20px;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+}
+
+.admin-column {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.panel-block {
+  border: 1px solid #d9dfe7;
+  border-radius: 14px;
+  background: #fdfefe;
+  padding: 14px;
+}
+
+.panel-block h4 {
+  margin: 0 0 6px;
+}
+
+.panel-block-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.resource-list,
+.document-list,
+.scenario-attachment-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.resource-card {
+  width: 100%;
+  text-align: left;
+  background: #f6f8fc;
+  border: 1px solid #d9dfe7;
+  color: #0f172a;
+}
+
+.resource-card.active {
+  border-color: #0b3b4b;
+  background: #e6f6ff;
+}
+
+.resource-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.document-card {
+  border: 1px solid #d9dfe7;
+  border-radius: 12px;
+  padding: 12px;
+  background: #f8fafc;
+}
+
+.compact-form {
+  margin-bottom: 12px;
+}
+
+.scenario-attachment {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  border: 1px solid #d9dfe7;
+  border-radius: 12px;
+  padding: 12px;
+  background: #fdfefe;
+}
+
+.scenario-attachment-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 220px;
+}
+
+.scenario-attachment-controls select {
+  flex: 1;
+}
+
 @media (max-width: 840px) {
   .hero {
     grid-template-columns: 1fr;
+  }
+
+  .scenario-attachment {
+    flex-direction: column;
+  }
+
+  .scenario-attachment-controls {
+    width: 100%;
+    min-width: 0;
   }
 }
 

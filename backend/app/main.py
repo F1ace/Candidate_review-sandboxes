@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from . import models
 from .config import settings
 from .database import SessionLocal
-from .routers import roles, scenarios, sessions, sql_scenarios
+from .routers import rag, roles, scenarios, sessions, sql_scenarios
 from .services import lm_client
 
 
@@ -25,7 +25,7 @@ app.add_middleware(
 
 app.include_router(roles.router)
 app.include_router(scenarios.router)
-#app.include_router(rag.router)
+app.include_router(rag.router)
 app.include_router(sql_scenarios.router)
 app.include_router(sessions.router)
 

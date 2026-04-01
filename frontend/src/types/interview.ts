@@ -31,6 +31,28 @@ export type Scenario = {
   tasks?: Task[];
 };
 
+export type RagCorpus = {
+  id: number;
+  name: string;
+  description?: string | null;
+};
+
+export type RagDocument = {
+  id: number;
+  rag_corpus_id: number;
+  filename: string;
+  content: string;
+  content_type?: string | null;
+  storage_bucket?: string | null;
+  object_key?: string | null;
+  size_bytes?: number | null;
+  checksum_sha256?: string | null;
+  status: string;
+  created_at: string;
+  ingested_at?: string | null;
+  metadata?: Record<string, unknown> | null;
+};
+
 export type Message = {
   sender: "candidate" | "model" | "system";
   text: string;
