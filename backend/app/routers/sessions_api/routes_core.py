@@ -94,6 +94,7 @@ def score_task(session_id: str, payload: schemas.ScoreCreate, db: Session = Depe
 
     task_type = task.get("type")
     max_points = int(task.get("max_points", 0) or 0)
+    theory_max_points = int(task.get("max_points", 10) or 10)
     points = float(int(round(float(payload.points))))
     comment = (payload.comment or "").strip()
 
@@ -101,8 +102,8 @@ def score_task(session_id: str, payload: schemas.ScoreCreate, db: Session = Depe
         raise HTTPException(status_code=400, detail="comment is required and must be non-empty")
 
     if task_type == "theory":
-        if points < 1 or points > 10:
-            raise HTTPException(status_code=400, detail="Theory score should be within [1, 10]")
+        if points < 1 or points > theory_max_points:
+            raise HTTPException(status_code=400, detail=f"Theory score should be within [1, {theory_max_points}]",)
 
         question_index = payload.question_index
         if not payload.is_final:
@@ -150,7 +151,7 @@ def score_task(session_id: str, payload: schemas.ScoreCreate, db: Session = Depe
             if aggregated["avg_points"] is None:
                 raise HTTPException(status_code=400, detail="Theory final score requires intermediate scores first.")
 
-            points = _compute_final_theory_points(points, aggregated["avg_points"])
+            points = _compute_final_theory_points(points, aggregated["avg_points"], theory_max_points,)
             question_index = None
 
         score = models.Score(

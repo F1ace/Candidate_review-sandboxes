@@ -11,6 +11,7 @@ from .config import settings
 from .database import SessionLocal
 from .routers import roles, scenarios, sessions, sql_scenarios
 from .services import lm_client
+from .scripts.sync_tasks_from_scenarios import sync as sync_tasks_from_scenarios
 
 
 app = FastAPI(title="Chat-Review for candidates", version="0.1.0")
@@ -85,7 +86,7 @@ def seed_defaults() -> None:
                         "id": "T1",
                         "type": "theory",
                         "title": "DS Junior — основы ML",
-                        "max_points": 5,
+                        "max_points": 10,
                         "questions": [
                             "Чем отличаются задачи регрессии и классификации? Приведите по одному примеру для каждой.",
                             "Что такое переобучение и какие базовые способы борьбы с ним вы знаете?",
@@ -183,7 +184,7 @@ class LogisticRegression:
                             "Учитывайте только заказы со статусом paid или shipped. "
                             "Верните city, orders_cnt, total_revenue."
                         ),
-                        "max_points": 8,
+                        "max_points": 10,
                         "sql_scenario_id": "ecommerce_basic",
                     },
                 ],
@@ -207,7 +208,7 @@ class LogisticRegression:
                         "id": "T-DS-PRODUCT",
                         "type": "theory",
                         "title": "DS Product — эксперименты и продуктовые метрики",
-                        "max_points": 6,
+                        "max_points": 10,
                         "questions": [
                             "Какие продуктовые метрики вы считаете ключевыми для оценки результата A/B-теста и как вы бы выбрали основную метрику?",
                             "Что такое p-value и доверительный интервал? Чем статистическая значимость отличается от практической значимости результата?",
@@ -287,7 +288,7 @@ class ABReport:
                             "Пользователь считается сконвертировавшимся, если у него есть хотя бы одно событие purchase."
                         ),
                         "sql_scenario_id": "ab_product",
-                        "max_points": 8,
+                        "max_points": 10,
                     },
                 ],
             ),
@@ -313,7 +314,7 @@ class ABReport:
                         "id": "T-JUNIOR-BE",
                         "type": "theory",
                         "title": "Backend Junior — базовые понятия HTTP и API",
-                        "max_points": 5,
+                        "max_points": 10,
                         "questions": [
                             "Чем отличаются HTTP-методы GET и POST? Приведите пример для REST API.",
                             "Что означают HTTP-статусы 200, 201, 400, 404, 409 и 500?",
@@ -405,7 +406,7 @@ class UrlShortener:
                         "id": "T-REST",
                         "type": "theory",
                         "title": "REST и надёжные API",
-                        "max_points": 6,
+                        "max_points": 10,
                         "questions": [
                             "В чём разница между PUT и PATCH? Какие из этих методов считаются идемпотентными? Приведите пример тела запроса для каждого случая.",
                             "Как правильно выбирать коды ошибок 400, 401, 403, 404, 409 и 422? Что обычно должно быть в теле ответа с ошибкой?",
@@ -503,7 +504,7 @@ class TaskQueue:
                         "id": "T-RESILIENCE",
                         "type": "theory",
                         "title": "Resilience patterns",
-                        "max_points": 7,
+                        "max_points": 10,
                         "questions": [
                             "Какие подходы к выполнению повторных попыток вы знаете? В каких случаях повторные попытки полезны, а в каких могут ухудшить работу системы?",
                             "Что такое circuit breaker? Опишите его состояния, условия переходов и метрики, на которые вы бы опирались.",
@@ -591,7 +592,7 @@ class TokenBucket:
                         "id": "T-DE-PIPELINES",
                         "type": "theory",
                         "title": "Data Engineering — инкременты и надёжность",
-                        "max_points": 6,
+                        "max_points": 10,
                         "questions": [
                             "Что такое watermark и checkpoint в потоковой обработке данных? Как они помогают работать с опоздавшими событиями?",
                             "Чем отличаются гарантии exactly-once, at-least-once и at-most-once? Где и почему обычно используется каждый из этих вариантов?",
@@ -676,7 +677,7 @@ class DailyDistinctAggregator:
                             "Верните event_date, region, dau."
                         ),
                         "sql_scenario_id": "events_basic",
-                        "max_points": 8,
+                        "max_points": 10,
                     },
                 ],
             ),
@@ -700,7 +701,7 @@ class DailyDistinctAggregator:
                         "id": "T-DE-WH",
                         "type": "theory",
                         "title": "Хранилище данных и моделирование",
-                        "max_points": 7,
+                        "max_points": 10,
                         "questions": [
                             "В чём различие между схемами star schema и snowflake? Как это влияет на производительность и сопровождение хранилища?",
                             "Какие варианты хранения истории изменений в измерениях вы знаете? Что сохраняется в каждом случае и когда такой подход уместен?",
@@ -779,7 +780,7 @@ def scd2_merge(current: List[Dict], updates: List[Dict]):
                             "если изменений нет — ничего не делать."
                         ),
                         "sql_scenario_id": "scd_customers",
-                        "max_points": 9,
+                        "max_points": 10,
                     },
                 ],
             ),
@@ -808,7 +809,7 @@ def scd2_merge(current: List[Dict], updates: List[Dict]):
 @app.on_event("startup")
 def on_startup() -> None:
     seed_defaults()
-
+    sync_tasks_from_scenarios()
 
 @app.get("/lm/ping")
 def lm_ping() -> dict:

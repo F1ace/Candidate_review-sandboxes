@@ -269,14 +269,37 @@ def evaluate_sql_answer(
             )
 
     max_score = int(task_row.max_points or 0)
-    score = int(round(max_score * float(eval_result.get("score_ratio", 0.0))))
+    score_ratio = float(eval_result.get("score_ratio", 0.0))
+
+    candidate_result = execution_result.get("result") if isinstance(execution_result, dict) and "result" in execution_result else execution_result
+    candidate_success = bool(isinstance(candidate_result, dict) and candidate_result.get("success"))
+
+    if not candidate_success:
+        score = 0
+    elif score_ratio >= 0.999:
+        score = max_score
+    else:
+        score = min(5, max_score)
+
+    raw_feedback = (eval_result.get("feedback") or "").strip()
+
+    if score == 0:
+        score_feedback_prefix = "Итог: 0/10. Запрос не выполнился."
+    elif score == max_score:
+        score_feedback_prefix = f"Итог: {max_score}/{max_score}. Запрос выполнился и результат полностью корректен."
+    else:
+        score_feedback_prefix = f"Итог: {score}/{max_score}. Запрос выполнился, но решение только частично соответствует ожидаемому результату."
+
+    feedback = score_feedback_prefix
+    if raw_feedback:
+        feedback = f"{score_feedback_prefix}\n{raw_feedback}"
 
     return {
         "is_correct": bool(eval_result.get("is_correct")),
         "score_ratio": float(eval_result.get("score_ratio", 0.0)),
         "score": score,
         "max_score": max_score,
-        "feedback": eval_result.get("feedback") or "",
+        "feedback": feedback,
         "details": eval_result.get("details") or {},
         "compare_mode": compare_mode,
         "sql_scenario_id": scenario_name,

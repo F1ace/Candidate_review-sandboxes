@@ -495,13 +495,13 @@ def _build_dynamic_growth_points(result: dict[str, Any]) -> list[str]:
         "Для усиления ответа полезно чаще связывать теорию с продуктовой практикой: приводить примеры, обозначать trade-off'ы и объяснять, как выводы из эксперимента влияют на решение команды."
     ]
 
-def _score_feedback(result: dict[str, Any]) -> str:
+def _score_feedback(result: dict[str, Any], theory_max_points: int = 10):
     if not isinstance(result, dict):
         result = {}
 
     task_id = result.get("task_id") or ""
     pts = result.get("points")
-    pts_txt = f"{int(pts)}/10" if pts is not None else "оценка выставлена"
+    pts_txt = f"{int(pts)}/{theory_max_points}" if pts is not None else "оценка выставлена"
     comment = (result.get("comment") or "").strip()
 
     raw_is_final = result.get("is_final", True)

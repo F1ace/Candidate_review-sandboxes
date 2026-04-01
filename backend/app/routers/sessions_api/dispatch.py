@@ -335,38 +335,35 @@ def _apply_score(session: models.Session, args: dict[str, Any], db: Session) -> 
         return {"ok": False, "error": THEORY_COMMENT_EMPTY}
 
     if task_type == "theory":
-        if len(comment) < 45:
-            return {"ok": False, "error": THEORY_COMMENT_TOO_SHORT,}
-        
+        if len(comment) < 30:
+            return {"ok": False, "error": THEORY_COMMENT_TOO_SHORT}
+
+        # Жёсткую проверку секций временно отключаем:
+        # модель часто ломается на 4-м вопросе именно здесь.
+        # Секции оставляем как требование промпта, а не как блокирующую backend-валидацию.
+        # comment_structure_error = _validate_theory_comment_structure(comment)
+        # if comment_structure_error:
+        #     return {"ok": False, "error": comment_structure_error}
+
         trimmed = comment.rstrip()
         if trimmed.endswith(("—", "-", ":", ",", ";")):
             return {"ok": False, "error": THEORY_COMMENT_TRUNCATED}
 
-        # Похоже на оборванный комментарий: заканчивается на служебный обрывок
-        # или на очень короткий хвост без знака завершения.
         tail = comment[-12:].strip().lower()
         suspicious_tail = (
             len(comment.split()[-1]) <= 2
             or tail in {"и", "а", "но", "что", "как", "к", "по", "в", "на", "с"}
             or re.search(r"\b[а-яa-z]{1,2}$", comment.lower()) is not None
         )
-
-        has_terminal_punctuation = bool(re.search(r"[.!?…]\s*$", comment))
-
-        # Если нет завершающего знака и при этом хвост выглядит оборванным — режем.
-        if suspicious_tail and not has_terminal_punctuation:
-            return {
-                "ok": False,
-                "error": THEORY_COMMENT_TRUNCATED,
-            }
     if task_type in {"coding", "sql"}:
         comment_error = _validate_practice_comment(comment, task_type)
         if comment_error:
             return {"ok": False, "error": comment_error}
 
     if task_type == "theory":
-        if points < 1 or points > 10:
-            return {"ok": False, "error": "Theory score should be within [1, 10]"}
+        theory_max_points = int(task.get("max_points", 10) or 10)
+        if points < 1 or points > theory_max_points:
+            return {"ok": False, "error": f"Theory score should be within [1, {theory_max_points}]"}
 
         if not is_final:
             validation_error = _validate_theory_intermediate_score_args(task, question_index)
@@ -430,7 +427,7 @@ def _apply_score(session: models.Session, args: dict[str, Any], db: Session) -> 
                 aggregated["avg_points"],
                 aggregated["comments"],
             )
-            points = _compute_final_theory_points(requested_points, penalized_avg)
+            points = _compute_final_theory_points(requested_points, penalized_avg, theory_max_points,)
             question_index = None
 
         score = models.Score(
@@ -554,7 +551,7 @@ def _theory_intermediate_ready_for_scoring(
         return f"Intermediate score for question_index={question_index} already exists."
 
     q_re = re.compile(
-        rf"(?im)(?:^|\n)\s*[*_`\->#\s]*\s*вопрос\s*{question_index}\s*/\s*{total}"
+        rf"(?im)(?:^|[\n\r]|[.!?]\s+)\s*[*_`\->#\s]*\s*вопрос\s*{question_index}\s*/\s*{total}"
         rf"(?:\s*[\(\[].*?[\)\]])?"
         rf"\s*[:\-—]\s*"
     )
@@ -627,14 +624,21 @@ def _validate_theory_intermediate_score_args(task: dict[str, Any], question_inde
         return f"question_index must be within [1, {question_count}]"
     return None
 
+def _validate_theory_comment_structure(comment: str) -> str | None:
+    required_sections = ["верно:", "не хватает:", "ошибка/сомнение:"]
+    low = (comment or "").lower()
+    missing = [section for section in required_sections if section not in low]
+    if missing:
+        return f"Theory comment must contain sections: {', '.join(required_sections)}"
+    return None
+
 def _compute_final_theory_points(
     requested_points: float,
     aggregated_avg: int,
+    max_points: int,
 ) -> float:
-    # Финальная оценка не должна быть выше усреднённого промежуточного балла.
-    # Допускаем только понижение, а не повышение.
     capped = min(int(round(requested_points)), int(round(aggregated_avg)))
-    return float(max(1, min(10, capped)))
+    return float(max(1, min(max_points, capped)))
 
 def _aggregate_theory_intermediate_scores(session: models.Session, db: Session, task_id: str) -> dict[str, Any]:
     task = _get_task_by_id(session.scenario, task_id) or {}
@@ -672,26 +676,59 @@ def _apply_theory_penalties(
     aggregated_avg: int,
     comments: list[str],
 ) -> int:
+    if not comments:
+        return aggregated_avg
+
+    weak_count = 0
+    error_count = 0
+    critical_count = 0
+
+    no_error_markers = {
+        "",
+        "нет",
+        "нет.",
+        "отсутствует",
+        "отсутствует.",
+        "ошибок нет",
+        "сомнений нет",
+        "явных ошибок нет",
+        "существенных ошибок нет",
+    }
+
+    for comment in comments or []:
+        low = (comment or "").lower()
+
+        if "не хватает:" in low:
+            missing_part = low.split("не хватает:", 1)[1].split("ошибка/сомнение:", 1)[0].strip()
+            if missing_part and missing_part not in {"нет", "нет.", "ничего", "ничего существенного"}:
+                weak_count += 1
+
+        if "ошибка/сомнение:" in low:
+            error_part = low.split("ошибка/сомнение:", 1)[1].strip()
+            if error_part not in no_error_markers:
+                if any(marker in error_part for marker in [
+                    "критическая ошибка",
+                    "неверно раскрыта суть",
+                    "ошибка в базовом определении",
+                    "перепутано с",
+                ]):
+                    critical_count += 1
+                else:
+                    error_count += 1
+
     penalty = 0
-    joined = " ".join((comments or [])).lower()
 
-    weak_markers = [
-        "не привёл пример",
-        "не привел пример",
-        "без примера",
-        "не все статусы",
-        "неполный ответ",
-        "ответ фрагментарный",
-        "есть пробелы",
-        "не хватает деталей",
-        "неполное объяснение",
-    ]
+    # Неполнота по нескольким вопросам — мягкий штраф
+    if weak_count >= 2:
+        penalty += 1
 
-    for marker in weak_markers:
-        if marker in joined:
-            penalty += 1
+    # Обычные ошибки не должны обрушать итог, если промежуточные баллы уже это учли
+    if error_count >= 2:
+        penalty += 1
 
-    # Не даём штрафу уйти слишком далеко
+    # Критическая ошибка — ещё один штраф
+    if critical_count >= 1:
+        penalty += 1
+
     penalty = min(penalty, 2)
-
     return max(1, aggregated_avg - penalty)

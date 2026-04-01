@@ -29,7 +29,7 @@ const defaultTasks: Task[] = [
     type: "theory",
     title: "Основы регрессии",
     description: "Объяснить, что такое линейная регрессия, и перечислить метрики качества.",
-    max_points: 5,
+    max_points: 10,
     hints_allowed: false,
   },
   {
@@ -46,7 +46,7 @@ const defaultTasks: Task[] = [
     type: "sql",
     title: "Агрегация заказов",
     description_for_candidate: "По таблицам orders и customers посчитайте сумму заказов по городам.",
-    max_points: 8,
+    max_points: 10,
     sql_scenario_id: "ecommerce_basic",
   },
 ];
@@ -215,14 +215,14 @@ const theoryCompleted = useMemo(() => {
       description: "A/B, метрики продукта, рекомендации",
       difficulty: "middle",
       tasks: [
-        { id: "T-metrics", type: "theory", title: "Метрики A/B", max_points: 5, hints_allowed: false },
+        { id: "T-metrics", type: "theory", title: "Метрики A/B", max_points: 10, hints_allowed: false },
         {
           id: "SQL-ab",
           type: "sql",
           title: "Конверсия по когорте",
           description_for_candidate: "Напишите запрос конверсии по дню регистрации.",
           sql_scenario_id: "ab_product",
-          max_points: 8,
+          max_points: 10,
         },
       ],
     },
@@ -234,7 +234,7 @@ const theoryCompleted = useMemo(() => {
       description: "API дизайн, идемпотентность, очереди",
       difficulty: "middle",
       tasks: [
-        { id: "T-REST", type: "theory", title: "PUT vs PATCH идемпотентность", max_points: 5 },
+        { id: "T-REST", type: "theory", title: "PUT vs PATCH идемпотентность", max_points: 10 },
         {
           id: "C-BE",
           type: "coding",
@@ -242,7 +242,7 @@ const theoryCompleted = useMemo(() => {
           title: "Очередь задач",
           description_for_candidate: "Реализуйте очередь с ack/nack.",
           tests_id: "queue_basic",
-          max_points: 8,
+          max_points: 10,
         },
       ],
     },
@@ -254,7 +254,7 @@ const theoryCompleted = useMemo(() => {
       description: "Ретраи, троттлинг, circuit breaker",
       difficulty: "senior",
       tasks: [
-        { id: "T-circuit", type: "theory", title: "Circuit breaker", max_points: 6, hints_allowed: false },
+        { id: "T-circuit", type: "theory", title: "Circuit breaker", max_points: 10, hints_allowed: false },
         {
           id: "C-rate",
           type: "coding",
@@ -262,7 +262,7 @@ const theoryCompleted = useMemo(() => {
           title: "Rate limiter",
           description_for_candidate: "Сделайте токен-бакет.",
           tests_id: "rate_limiter",
-          max_points: 9,
+          max_points: 10,
         },
       ],
     },
@@ -274,14 +274,14 @@ const theoryCompleted = useMemo(() => {
       description: "Инкрементальные пайплайны, буферизация, SLA",
       difficulty: "middle",
       tasks: [
-        { id: "T-de-incr", type: "theory", title: "Инкрементальные загрузки", max_points: 5, hints_allowed: false },
+        { id: "T-de-incr", type: "theory", title: "Инкрементальные загрузки", max_points: 10, hints_allowed: false },
         {
           id: "SQL-de-agg",
           type: "sql",
           title: "Агрегация событий",
           description_for_candidate: "Посчитайте DAU по регионам из таблицы events.",
           sql_scenario_id: "events_basic",
-          max_points: 8,
+          max_points: 10,
         },
       ],
     },
@@ -293,14 +293,14 @@ const theoryCompleted = useMemo(() => {
       description: "Моделирование данных, SCD, оркестрация",
       difficulty: "senior",
       tasks: [
-        { id: "T-scd", type: "theory", title: "SCD типы", max_points: 6 },
+        { id: "T-scd", type: "theory", title: "SCD типы", max_points: 10 },
         {
           id: "SQL-scd",
           type: "sql",
           title: "SCD Type 2 обновление",
           description_for_candidate: "Напишите SQL, который добавляет новую версию записи клиента.",
           sql_scenario_id: "scd_customers",
-          max_points: 9,
+          max_points: 10,
         },
       ],
     },
@@ -990,7 +990,7 @@ const goNextTask = () => {
 
                   {scoreResult ? (
                     <>
-                      <p><strong>Оценка:</strong> {scoreResult.points}/10</p>
+                      <p><strong>Оценка:</strong> {scoreResult.points}/{currentTask?.max_points ?? 10}</p>
                       {scoreResult.comment && (
                         <ReactMarkdown>
                           {currentTask?.type === "sql"

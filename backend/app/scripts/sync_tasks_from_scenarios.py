@@ -29,6 +29,12 @@ def sync():
 
         for scenario in scenarios:
             payload_tasks = scenario.tasks or []
+            seen_ids = set()
+            for item in payload_tasks:
+                task_id = item["id"]
+                if task_id in seen_ids:
+                    raise ValueError(f"Duplicate task id '{task_id}' in scenario '{scenario.slug}'")
+                seen_ids.add(task_id)
             existing = {
                 t.external_id: t
                 for t in db.query(models.Task).filter(models.Task.scenario_id == scenario.id).all()
@@ -69,6 +75,13 @@ def sync():
                 task.related_topics = item.get("related_topics")
                 task.questions = item.get("questions")
                 task.extra_config = extra or None
+
+            payload_ids = {item["id"] for item in payload_tasks}
+
+            stale_tasks = [task for ext_id, task in existing.items() if ext_id not in payload_ids]
+
+            for task in stale_tasks:
+                db.delete(task)
 
             db.commit()
             print(f"[OK] Synced tasks for scenario {scenario.slug}")

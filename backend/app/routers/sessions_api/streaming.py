@@ -15,8 +15,8 @@ from .prompting import (_analyze_candidate_message, _build_system_prompt, _extra
 from .router import logger
 from .state import (_control_state, _conversation_snapshot, _convert_history, _first_practice_task, _get_task_by_id, _theory_is_complete, _theory_summary_text,)
 from .tool_call_utils import (attach_inline_tool_call as _attach_inline_tool_call, is_score_task_error as _is_score_task_error, looks_like_tool_dump as _looks_like_tool_dump,)
-from .tool_errors import (THEORY_COMMENT_EMPTY, THEORY_COMMENT_TOO_SHORT, THEORY_COMMENT_TRUNCATED,)
 from .tools import TOOLS
+from .theory_retry import (build_theory_comment_retry_message, force_final_theory_score, force_pending_theory_intermediate_score, has_unscored_answer_for_current_theory_question, is_retryable_theory_score_error, resolve_current_task_id, score_task_only_tools,)
 
 def _sanitize_streamed_text(
     text: str,
@@ -57,33 +57,10 @@ def _human_tool_error(result: dict) -> str:
         "Попробуйте отправить сообщение ещё раз."
     )
 
-def _is_retryable_theory_score_error(
-    result: dict[str, Any] | None,
-) -> bool:
-    if not isinstance(result, dict):
-        return False
-    if result.get("ok") is True:
-        return False
-
-    err = (result.get("error") or "").strip()
-    return err in {
-        THEORY_COMMENT_EMPTY,
-        THEORY_COMMENT_TOO_SHORT,
-        THEORY_COMMENT_TRUNCATED,
-    }
-
-
 def _is_theory_rag_validation_error(result: dict[str, Any] | None) -> bool:
     if not isinstance(result, dict):
         return False
     return (result.get("error_code") or "") == "theory_rag_validation_required"
-
-def _score_task_only_tools() -> list[dict[str, Any]]:
-    return [
-        t for t in TOOLS
-        if t.get("function", {}).get("name") == "score_task"
-    ]
-
 
 def _as_bool(value: Any, default: bool = False) -> bool:
     if isinstance(value, bool):
@@ -120,95 +97,6 @@ def _coerce_inline_tool_call(
     )
     return assistant_msg, tool_calls
 
-def _force_pending_theory_intermediate_score(
-    assistant_msg: dict[str, Any],
-    *,
-    task_id: str,
-    question_index: int,
-) -> tuple[dict[str, Any], list[dict[str, Any]] | None]:
-    """
-    Если сейчас обязателен промежуточный theory score_task,
-    жёстко нормализуем первый tool_call:
-    - is_final = false
-    - question_index = pending question
-    - task_id = текущая theory-задача
-    """
-    tool_calls = assistant_msg.get("tool_calls")
-    if not tool_calls:
-        return assistant_msg, tool_calls
-
-    first = tool_calls[0]
-    function = first.get("function") or {}
-    name = function.get("name") or ""
-
-    if isinstance(name, str) and "." in name:
-        name = name.split(".")[-1]
-
-    if name != "score_task":
-        return assistant_msg, tool_calls
-
-    try:
-        args = json.loads(function.get("arguments") or "{}")
-    except Exception:
-        args = {}
-
-    if not isinstance(args, dict):
-        args = {}
-
-    args["task_id"] = task_id
-    args["question_index"] = question_index
-    args["is_final"] = False
-
-    function["arguments"] = json.dumps(args, ensure_ascii=False)
-    first["function"] = function
-    tool_calls[0] = first
-    assistant_msg["tool_calls"] = tool_calls
-    return assistant_msg, tool_calls
-
-def _force_final_theory_score(
-    assistant_msg: dict[str, Any],
-    *,
-    task_id: str,
-) -> tuple[dict[str, Any], list[dict[str, Any]] | None]:
-    """
-    Если сейчас нужен финальный theory score_task,
-    жёстко нормализуем первый tool_call:
-    - is_final = true
-    - question_index = None
-    - task_id = текущая theory-задача
-    """
-    tool_calls = assistant_msg.get("tool_calls")
-    if not tool_calls:
-        return assistant_msg, tool_calls
-
-    first = tool_calls[0]
-    function = first.get("function") or {}
-    name = function.get("name") or ""
-
-    if isinstance(name, str) and "." in name:
-        name = name.split(".")[-1]
-
-    if name != "score_task":
-        return assistant_msg, tool_calls
-
-    try:
-        args = json.loads(function.get("arguments") or "{}")
-    except Exception:
-        args = {}
-
-    if not isinstance(args, dict):
-        args = {}
-
-    args["task_id"] = task_id
-    args["is_final"] = True
-    args["question_index"] = None
-
-    function["arguments"] = json.dumps(args, ensure_ascii=False)
-    first["function"] = function
-    tool_calls[0] = first
-    assistant_msg["tool_calls"] = tool_calls
-    return assistant_msg, tool_calls
-
 def _build_theory_question_message(
     session: models.Session,
     task_id: str,
@@ -241,104 +129,13 @@ def _build_theory_question_message(
 
     return f"**Вопрос {question_index}/{total}:** {question_text}"
 
-
-def _has_unscored_answer_for_current_theory_question(
-    session: models.Session,
-    db,
-) -> tuple[bool, str | None, int | None]:
-    current_task_id = _resolve_current_task_id(session, db)
-    if not current_task_id:
-        return False, None, None
-
-    task_obj = _get_task_by_id(session.scenario, current_task_id)
-    if not task_obj or task_obj.get("type") != "theory":
-        return False, current_task_id, None
-
-    questions = task_obj.get("questions") or []
-    total = len(questions)
-    if not total:
-        return False, current_task_id, None
-
-    history = (
-        db.query(models.Message)
-        .filter_by(session_id=session.id)
-        .order_by(models.Message.created_at)
-        .all()
-    )
-
-    current_question_index = None
-    for m in reversed(history):
-        if m.sender != "model":
-            continue
-        txt = (m.text or "").strip()
-        match = re.search(r"(?im)вопрос\s+(\d+)\s*/\s*(\d+)", txt)
-        if match:
-            current_question_index = int(match.group(1))
-            break
-
-    if not current_question_index:
-        return False, current_task_id, None
-
-    last_candidate = None
-    for m in reversed(history):
-        if m.sender == "candidate" and (m.text or "").strip():
-            last_candidate = m
-            break
-
-    if not last_candidate:
-        return False, current_task_id, current_question_index
-
-    existing = (
-        db.query(models.Score)
-        .filter(
-            models.Score.session_id == session.id,
-            models.Score.task_id == current_task_id,
-            models.Score.is_final.is_(False),
-            models.Score.question_index == current_question_index,
-        )
-        .first()
-    )
-
-    needs_score = existing is None
-    return needs_score, current_task_id, current_question_index
-
-
-def _resolve_current_task_id(session: models.Session, db) -> str | None:
-    if session.current_task_id:
-        return session.current_task_id
-
-    tasks = session.scenario.tasks or []
-    if not tasks:
-        return None
-
-    for task in tasks:
-        task_id = task.get("id")
-        if not task_id:
-            continue
-
-        final_score_exists = (
-            db.query(models.Score)
-            .filter(
-                models.Score.session_id == session.id,
-                models.Score.task_id == task_id,
-                models.Score.is_final.is_(True),
-            )
-            .first()
-            is not None
-        )
-        if not final_score_exists:
-            return task_id
-
-    return tasks[0].get("id")
-
-
 def _should_allow_final_theory_score_tool(
     session: models.Session,
     db,
     task_id: str | None,
     score_result_payload: dict[str, Any] | None,
 ) -> bool:
-    task_id = task_id or _resolve_current_task_id(session, db)
+    task_id = task_id or resolve_current_task_id(session, db)
     if not task_id:
         return False
 
@@ -428,7 +225,7 @@ def stream_model(session_id: str):
     ]
     base_messages.extend(_convert_history(history_db))
 
-    needs_intermediate_score, current_task_id, pending_question_index = _has_unscored_answer_for_current_theory_question(
+    needs_intermediate_score, current_task_id, pending_question_index = has_unscored_answer_for_current_theory_question(
         session,
         base_db,
     )
@@ -442,6 +239,7 @@ def stream_model(session_id: str):
     theory_validation_message = ""
     if needs_intermediate_score and current_task_id and pending_question_index:
         task_obj = _get_task_by_id(session.scenario, current_task_id)
+        theory_max_points = int(task_obj.get("max_points", 10) or 10)
         if task_obj and task_obj.get("type") == "theory":
             validation = ensure_theory_validation(
                 session=session,
@@ -472,14 +270,13 @@ def stream_model(session_id: str):
                 "content": (
                     f"Кандидат только что ответил на theory-вопрос question_index={pending_question_index}. "
                     "Сейчас нужно обязательно вызвать score_task. "
-                    "Требования: is_final=false, корректный question_index, task_id текущей theory-задачи, "
-                    "points в диапазоне 1..10, непустой comment на 2-3 ПОЛНЫХ законченных предложения по-русски. Не обрывай фразу на полуслове."
-                    "Не пиши обычный текст."
+                    f"Требования: is_final=false, корректный question_index, task_id текущей theory-задачи, "
+                    f"points в диапазоне 1..{theory_max_points}, непустой comment на 2-3 ПОЛНЫХ законченных предложения по-русски. Не обрывай фразу на полуслове."
                 ),
             })
             first_resp = lm_client.chat(
                 request_messages,
-                tools=_score_task_only_tools(),
+                tools=score_task_only_tools(),
                 tool_choice="required",
             )
         else:
@@ -497,7 +294,7 @@ def stream_model(session_id: str):
     )
 
     if needs_intermediate_score and current_task_id and pending_question_index:
-        assistant_msg, tool_calls = _force_pending_theory_intermediate_score(
+        assistant_msg, tool_calls = force_pending_theory_intermediate_score(
             assistant_msg,
             task_id=current_task_id,
             question_index=pending_question_index,
@@ -513,7 +310,7 @@ def stream_model(session_id: str):
     max_rounds = 2
 
     if needs_intermediate_score and current_task_id and pending_question_index:
-        current_assistant_msg, current_tool_calls = _force_pending_theory_intermediate_score(
+        current_assistant_msg, current_tool_calls = force_pending_theory_intermediate_score(
             current_assistant_msg,
             task_id=current_task_id,
             question_index=pending_question_index,
@@ -549,38 +346,24 @@ def stream_model(session_id: str):
                 and needs_intermediate_score
                 and current_task_id
                 and pending_question_index
-                and _is_retryable_theory_score_error(result)
+                and is_retryable_theory_score_error(result)
             ):
                 retry_messages = list(stream_messages)
+                task_obj = _get_task_by_id(session.scenario, current_task_id) if current_task_id else None
+
                 retry_messages.append({
                     "role": "system",
-                    "content": (
-                        f"Предыдущий промежуточный score_task для theory-вопроса "
-                        f"question_index={pending_question_index} был отклонён backend.\n"
-                        f"Причина: {result.get('error') or 'unknown error'}\n\n"
-                        f"Сейчас нужно НЕМЕДЛЕННО повторить только tool score_task.\n"
-                        f"Исправь только поле comment.\n\n"
-                        f"Не меняй:\n"
-                        f"- task_id={current_task_id}\n"
-                        f"- question_index={pending_question_index}\n"
-                        f"- is_final=false\n"
-                        f"- points должны остаться корректными для этого ответа\n\n"
-                        f"Требования к comment:\n"
-                        f"- 1-3 законченных предложения\n"
-                        f"- не короче нормального содержательного комментария\n"
-                        f"- без обрыва на двоеточии, тире, запятой или точке с запятой\n"
-                        f"- кратко объясни, почему выставлены эти баллы\n\n"
-                        f"Нельзя:\n"
-                        f"- писать обычный текст кандидату\n"
-                        f"- задавать следующий вопрос\n"
-                        f"- вызывать другой инструмент\n\n"
-                        f"Верни только один tool call score_task."
+                    "content": build_theory_comment_retry_message(
+                        task_id=current_task_id,
+                        question_index=pending_question_index,
+                        error_text=result.get("error") or "unknown error",
+                        max_points=task_obj.get("max_points") if task_obj else None,
                     ),
                 })
 
                 retry_resp = lm_client.chat(
                     retry_messages,
-                    tools=_score_task_only_tools(),
+                    tools=score_task_only_tools(),
                     tool_choice="required",
                 )
                 retry_assistant_msg = retry_resp["choices"][0]["message"]
@@ -590,7 +373,7 @@ def stream_model(session_id: str):
                     tool_call_id="inline_toolcall_retry_theory_comment",
                 )
 
-                retry_assistant_msg, retry_tool_calls = _force_pending_theory_intermediate_score(
+                retry_assistant_msg, retry_tool_calls = force_pending_theory_intermediate_score(
                     retry_assistant_msg,
                     task_id=current_task_id,
                     question_index=pending_question_index,
@@ -639,7 +422,7 @@ def stream_model(session_id: str):
                     )
                     retry_resp = lm_client.chat(
                         retry_messages,
-                        tools=_score_task_only_tools(),
+                        tools=score_task_only_tools(),
                         tool_choice="required",
                     )
                     retry_assistant_msg = retry_resp["choices"][0]["message"]
@@ -648,7 +431,7 @@ def stream_model(session_id: str):
                         allow_tools=True,
                         tool_call_id="inline_toolcall_retry_theory_rag",
                     )
-                    retry_assistant_msg, retry_tool_calls = _force_pending_theory_intermediate_score(
+                    retry_assistant_msg, retry_tool_calls = force_pending_theory_intermediate_score(
                         retry_assistant_msg,
                         task_id=current_task_id,
                         question_index=pending_question_index,
@@ -735,7 +518,7 @@ def stream_model(session_id: str):
 
                     final_score_resp = lm_client.chat(
                         final_score_messages,
-                        tools=_score_task_only_tools(),
+                        tools=score_task_only_tools(),
                         tool_choice="required",
                     )
                     current_assistant_msg = final_score_resp["choices"][0]["message"]
@@ -744,7 +527,7 @@ def stream_model(session_id: str):
                         allow_tools=True,
                         tool_call_id="inline_toolcall_final_theory",
                     )
-                    current_assistant_msg, current_tool_calls = _force_final_theory_score(
+                    current_assistant_msg, current_tool_calls = force_final_theory_score(
                         current_assistant_msg,
                         task_id=last_score_task_id,
                     )
@@ -770,6 +553,8 @@ def stream_model(session_id: str):
                 if str(item).strip()
             )
 
+            theory_max_points = int(task_obj.get("max_points", 10) or 10)
+
             followup_messages.append({
                 "role": "system",
                 "content": (
@@ -782,13 +567,20 @@ def stream_model(session_id: str):
                     "4) Блок с зонами роста.\n"
                     "5) Короткий блок о том, что дальше интервью продолжается в практической части.\n\n"
                     "Критически важно:\n"
-                    f"- Используй ТОЧНО итоговую оценку: {exact_points}/10\n"
+                    f"- Используй ТОЧНО итоговую оценку: {exact_points}/{theory_max_points}\n"
                     "- Не придумывай другой балл.\n"
                     "- Не печатай JSON.\n"
                     "- Не печатай технический текст.\n"
                     "- Не вызывай tools.\n"
                     "- Пиши по-русски.\n"
-                    "- Формулируй зоны роста ИНДИВИДУАЛЬНО по ответам кандидата, а не статично.\n\n"
+                    "- Формулируй зоны роста ИНДИВИДУАЛЬНО по ответам кандидата, а не статично.\n"
+                    "- Итоговый разбор должен учитывать ВСЕ вопросы теоретического блока, а не только последний вопрос.\n"
+                    "- Если финальный comment уже слишком узкий, используй промежуточные comments как основной источник для полного summary.\n"
+                    "- В блоке 'Зоны роста' в первую очередь перечисляй КОНКРЕТНЫЕ критичные ошибки и спорные утверждения кандидата из промежуточных comments.\n"
+                    "- Если в промежуточных comments есть содержимое после маркера 'ошибка/сомнение:', переформулируй именно его в понятные пункты для кандидата.\n"
+                    "- Общие рекомендации допустимы только как дополнение, но не должны заменять описание фактических ошибок.\n"
+                    "- Не пиши абстрактные советы вроде 'раскрыть глубже' или 'добавить примеры', если в comments уже есть конкретная ошибка, которую можно назвать прямо.\n"
+                    "- Каждый пункт в 'Зонах роста' должен быть привязан к реально допущенной ошибке, неточности или пропуску в ответе кандидата.\n\n"
                     f"Финальный комментарий из score_task:\n{exact_comment}\n\n"
                     f"Промежуточные комментарии по вопросам:\n{aggregated_comments_text}"
                 ),
