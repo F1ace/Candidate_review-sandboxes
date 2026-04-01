@@ -32,6 +32,7 @@ def test_nonstream_theory_flow_uses_rag_for_validation(
     client,
     db_session,
     theory_scenario_factory,
+    embeddings_backend,
     monkeypatch,
 ):
     corpus_id = _create_corpus_with_document(client)
@@ -173,6 +174,10 @@ def test_nonstream_theory_flow_uses_rag_for_validation(
     assert len(validations) == 1
     assert validations[0].result_count >= 1
     assert "POST" in json.dumps(validations[0].evidence, ensure_ascii=False)
+    assert validations[0].evidence[0]["metadata"]["retrieval_backend"] == "langchain_inmemory_vectorstore"
+    assert validations[0].evidence[0]["metadata"]["embedding_model"] == "fake-lmstudio-embedding"
+    assert embeddings_backend.document_calls
+    assert embeddings_backend.query_calls
 
     scores = (
         db_session.query(models.Score)
