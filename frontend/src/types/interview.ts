@@ -67,6 +67,7 @@ export type SandboxValidationMode = "custom_checker" | "expected_error" | "exact
 export type SandboxTestResult = {
   code?: string;
   name?: string;
+  description?: string | null;
   passed?: boolean;
   error?: unknown;
   validation_mode?: SandboxValidationMode;
@@ -116,6 +117,7 @@ export type ScoreResultPayload = {
 
 export type ToolResultItem = {
   name?: string;
+  tool?: string;
   result?: unknown;
 };
 

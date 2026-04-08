@@ -94,6 +94,7 @@ TASK_TESTCASES = {
             {
                 "code": "shortener_same_url_same_code",
                 "name": "same URL returns same short code",
+                "description": "При повторном кодировании одного и того же URL должен возвращаться один и тот же short code. Этот код должен быть строкой длиной 6 и состоять только из символов A-Z, a-z и 0-9.",
                 "language": "python",
                 "input_data": {
                     "constructor": {"args": [], "kwargs": {}},
@@ -135,6 +136,7 @@ def check(actual, expected, saved_values):
             {
                 "code": "shortener_code_format",
                 "name": "generated code has length 6 and allowed alphabet",
+                "description": "Сгенерированный short code должен быть строкой длиной 6 и содержать только символы A-Z, a-z и 0-9.",
                 "language": "python",
                 "input_data": {
                     "constructor": {"args": [], "kwargs": {}},
@@ -224,6 +226,7 @@ def check(actual, expected, saved_values):
             {
                 "code": "logreg_predict_proba_range",
                 "name": "predict_proba returns probabilities in [0, 1]",
+                "description": "Метод predict_proba должен вернуть список из двух чисел — по одному значению на каждый переданный объект. Каждое значение должно находиться в диапазоне от 0 до 1 включительно.",
                 "language": "python",
                 "input_data": {
                     "constructor": {"args": [], "kwargs": {"lr": 0.1, "n_iters": 500}},
@@ -254,6 +257,7 @@ def check(actual, expected, saved_values):
             {
                 "code": "logreg_fit_returns_self",
                 "name": "fit returns self",
+                "description": "Метод fit должен возвращать тот же экземпляр объекта (self). Дополнительно после fit модель должна корректно предсказывать метки [0, 1] для тестовых точек.",
                 "language": "python",
                 "input_data": {
                     "constructor": {"args": [], "kwargs": {"lr": 0.1, "n_iters": 500}},
@@ -333,6 +337,7 @@ def check(actual, expected, saved_values):
             {
                 "code": "ab_report_extended_fields_are_consistent",
                 "name": "report includes extended stats and keeps them consistent",
+                "description": "Отчёт должен содержать поля nA, nB, convA, convB, diff, rel_uplift, ci_low, ci_high, z, p_value. Значения должны быть согласованы между собой: diff = convB - convA, diff должен лежать внутри доверительного интервала, p_value - в диапазоне [0, 1].",
                 "language": "python",
                 "input_data": {
                     "constructor": {"args": [], "kwargs": {}},
@@ -391,6 +396,7 @@ def check(actual, expected, saved_values):
             {
                 "code": "queue_enqueue_dequeue_first_item",
                 "name": "dequeue returns first enqueued item payload",
+                "description": "После enqueue('A') вызов dequeue() должен вернуть пару из 2 элементов, где второй элемент равен 'A'.",
                 "language": "python",
                 "input_data": {
                     "constructor": {"args": [], "kwargs": {}},
@@ -408,6 +414,7 @@ def check(actual, expected, saved_values):
             {
                 "code": "queue_fifo_second_item",
                 "name": "second dequeue returns second item payload",
+                "description": "После enqueue('A'), enqueue('B'), dequeue(), dequeue() второй вызов dequeue() должен вернуть пару из 2 элементов, где второй элемент равен 'B'.",
                 "language": "python",
                 "input_data": {
                     "constructor": {"args": [], "kwargs": {}},
@@ -427,6 +434,7 @@ def check(actual, expected, saved_values):
             {
                 "code": "queue_ack_removes_inflight",
                 "name": "ack removes inflight item and queue proceeds",
+                "description": "После подтверждения первого выданного элемента через ack(token) следующий dequeue() должен вернуть следующий элемент очереди, то есть 'B'.",
                 "language": "python",
                 "input_data": {
                     "constructor": {"args": [], "kwargs": {}},
@@ -453,6 +461,7 @@ def check(actual, expected, saved_values):
             {
                 "code": "queue_nack_requeues_item",
                 "name": "nack returns item back to queue",
+                "description": "После nack(token) ранее выданный элемент должен вернуться в очередь, и следующий dequeue() должен снова вернуть элемент 'A'.",
                 "language": "python",
                 "input_data": {
                     "constructor": {"args": [], "kwargs": {}},
@@ -491,6 +500,7 @@ def check(actual, expected, saved_values):
             {
                 "code": "queue_tokens_are_unique",
                 "name": "dequeue tokens are unique",
+                "description": "Два последовательных dequeue() для разных элементов должны вернуть разные токены, при этом первый элемент должен быть 'A', второй - 'B'.",
                 "language": "python",
                 "input_data": {
                     "constructor": {"args": [], "kwargs": {}},

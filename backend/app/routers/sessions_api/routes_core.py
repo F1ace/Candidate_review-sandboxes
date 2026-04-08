@@ -1,4 +1,4 @@
-from datetime import datetime
+﻿from datetime import datetime
 
 from fastapi import Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -6,24 +6,13 @@ from sqlalchemy.orm import Session
 from ... import models, schemas
 from ...database import get_db
 from ...services import sandbox, web_search, sql_runner, sql_evaluator
-from ...services.theory_rag import (
-    find_candidate_answer_message,
-    get_existing_validation,
-    theory_rag_required,
-)
+from ...services.theory_rag import (find_candidate_answer_message, get_existing_validation, theory_rag_required,)
 from .practice import _practice_agent_review, _practice_sql_agent_review
 from .router import router
 from .schemas import PracticeCodeRequest, PracticeSqlRequest
 from .state import _get_task_by_id
 from .state import advance_task_if_needed
-from .dispatch import (
-    _aggregate_theory_intermediate_scores,
-    _build_tests_payload,
-    _compute_final_theory_points,
-    _theory_ready_for_scoring,
-    _validate_theory_intermediate_score_args,
-    normalize_sandbox_result,
-)
+from .dispatch import (_aggregate_theory_intermediate_scores, _build_tests_payload, _compute_final_theory_points, _resolve_score_task_is_final, _theory_ready_for_scoring, _validate_theory_intermediate_score_args, _validate_final_theory_comment, _validate_final_theory_comments, _validate_theory_comment_not_template, normalize_sandbox_result,)
 
 @router.post("/", response_model=schemas.SessionOut, status_code=status.HTTP_201_CREATED)
 @router.post("", response_model=schemas.SessionOut, status_code=status.HTTP_201_CREATED)
@@ -58,7 +47,7 @@ def list_messages(session_id: str, db: Session = Depends(get_db)):
     session = db.get(models.Session, session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    return db.query(models.Message).filter_by(session_id=session_id).order_by(models.Message.created_at).all()
+    return db.query(models.Message).filter_by(session_id=session_id).order_by(models.Message.created_at.asc(), models.Message.id.asc()).all()
 
 @router.post("/{session_id}/messages", response_model=schemas.MessageOut)
 def post_message(session_id: str, payload: schemas.MessageCreate, db: Session = Depends(get_db)):
@@ -97,6 +86,13 @@ def score_task(session_id: str, payload: schemas.ScoreCreate, db: Session = Depe
     theory_max_points = int(task.get("max_points", 10) or 10)
     points = float(int(round(float(payload.points))))
     comment = (payload.comment or "").strip()
+    final_comments = payload.comments or []
+    request_payload = payload.model_dump(exclude_unset=True)
+    is_final = _resolve_score_task_is_final(
+        request_payload,
+        task_type=task_type,
+        question_index=payload.question_index,
+    )
 
     if not comment:
         raise HTTPException(status_code=400, detail="comment is required and must be non-empty")
@@ -105,8 +101,21 @@ def score_task(session_id: str, payload: schemas.ScoreCreate, db: Session = Depe
         if points < 1 or points > theory_max_points:
             raise HTTPException(status_code=400, detail=f"Theory score should be within [1, {theory_max_points}]",)
 
+        template_error = _validate_theory_comment_not_template(comment)
+        if template_error:
+            raise HTTPException(status_code=400, detail=template_error)
+
+        if is_final:
+            final_comment_error = _validate_final_theory_comment(comment)
+            if final_comment_error:
+                raise HTTPException(status_code=400, detail=final_comment_error)
+
+            final_comments_error = _validate_final_theory_comments(task, final_comments)
+            if final_comments_error:
+                raise HTTPException(status_code=400, detail=final_comments_error)
+
         question_index = payload.question_index
-        if not payload.is_final:
+        if not is_final:
             validation_error = _validate_theory_intermediate_score_args(task, question_index)
             if validation_error:
                 raise HTTPException(status_code=400, detail=validation_error)
@@ -159,18 +168,20 @@ def score_task(session_id: str, payload: schemas.ScoreCreate, db: Session = Depe
             task_id=payload.task_id,
             points=points,
             comment=comment,
-            is_final=payload.is_final,
+            is_final=is_final,
             question_index=question_index,
-            score_type="theory_final" if payload.is_final else "theory_intermediate",
+            score_type="theory_final" if is_final else "theory_intermediate",
         )
         db.add(score)
 
-        if payload.is_final:
+        if is_final:
             current_scores = session.scores or {}
             session.scores = {**current_scores, payload.task_id: points}
 
         db.commit()
         db.refresh(score)
+        if is_final:
+            setattr(score, "comments", final_comments)
         return score
 
     if points < 0 or points > max_points:
@@ -300,6 +311,7 @@ def _practice_sql_review(
         db=db,
         instruction=instruction,
         task_id=task_row.external_id,
+        candidate_query=query,
     )
 
 @router.post("/{session_id}/practice/sql")
@@ -321,6 +333,9 @@ def practice_sql(session_id: str, payload: PracticeSqlRequest, db: Session = Dep
 
     if task_row.task_type != "sql":
         raise HTTPException(status_code=400, detail="Task is not a SQL task")
+
+    session.current_task_id = payload.task_id
+    db.commit()
 
     return _practice_sql_review(
         session=session,
@@ -402,5 +417,5 @@ def practice_code(session_id: str, payload: PracticeCodeRequest, db: Session = D
         instruction=instruction,
         task_id=payload.task_id,
     )
-    
+
     return {"reply": review["reply"], "tool_results": review.get("tool_results", [])}

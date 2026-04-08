@@ -185,6 +185,7 @@
 
 .message.system {
   background: #f0f4f9;
+  color: #243447;
 }
 
 .message-meta {
@@ -193,6 +194,14 @@
   align-items: center;
   font-size: 12px;
   color: #5f6b7a;
+}
+
+.result-field {
+  margin: 8px 0 4px;
+  color: #243447;
+  font-size: 14px;
+  line-height: 1.5;
+  font-weight: 500;
 }
 
 .composer {

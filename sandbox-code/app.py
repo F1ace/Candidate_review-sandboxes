@@ -12,6 +12,7 @@ app = FastAPI(title="candidate-review sandbox-code")
 class TestCasePayload(BaseModel):
     code: str
     name: str
+    description: Optional[str] = None
     language: str = "python"
     input_data: Optional[dict[str, Any]] = None
     expected_output: Any = None
@@ -326,6 +327,7 @@ def _run_python_tests(code: str, tests: list[TestCasePayload]) -> dict[str, Any]
                 results.append({
                     "code": test.code,
                     "name": test.name,
+                    "description": test.description,
                     "passed": ok,
                     "actual": case_result.get("actual"),
                     "expected": case_result.get("expected"),
@@ -337,6 +339,7 @@ def _run_python_tests(code: str, tests: list[TestCasePayload]) -> dict[str, Any]
                 results.append({
                     "code": test.code,
                     "name": test.name,
+                    "description": test.description,
                     "passed": False,
                     "actual": None,
                     "expected": None,

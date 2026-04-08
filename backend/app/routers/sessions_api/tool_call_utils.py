@@ -1,6 +1,26 @@
 import json
+import re
 from typing import Any
 
+
+_TRAILING_JSON_TOOL_DUMP_RE = re.compile(
+    r'(?s)\n+\{\s*"ok"\s*:\s*(?:true|false)\s*,.*?"task_id"\s*:\s*".+?"\s*,.*?"points"\s*:\s*.*?"is_final"\s*:\s*.*?\}\s*$',
+    re.IGNORECASE,
+)
+
+_TRAILING_PY_TOOL_DUMP_RE = re.compile(
+    r"(?s)\n+\{\s*'ok'\s*:\s*(?:True|False)\s*,.*?'task_id'\s*:\s*'.+?'\s*,.*?'points'\s*:\s*.*?'is_final'\s*:\s*.*?\}\s*$"
+)
+
+
+def strip_trailing_tool_dump(text: str) -> str:
+    t = (text or "").rstrip()
+    if not t:
+        return ""
+
+    t = _TRAILING_JSON_TOOL_DUMP_RE.sub("", t).rstrip()
+    t = _TRAILING_PY_TOOL_DUMP_RE.sub("", t).rstrip()
+    return t
 
 def is_score_task_error(result: dict[str, Any]) -> bool:
     if not isinstance(result, dict):
@@ -60,6 +80,11 @@ def looks_like_tool_dump(text: str) -> bool:
     if '"code"' in low and '"task_id"' in low:
         return True
     if '"query"' in low and '"task_id"' in low:
+        return True
+    if _TRAILING_JSON_TOOL_DUMP_RE.search(t):
+        return True
+
+    if _TRAILING_PY_TOOL_DUMP_RE.search(t):
         return True
 
     return False

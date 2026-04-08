@@ -13,7 +13,63 @@ from ...services.theory_rag import (
     theory_rag_required,
 )
 from .state import _get_task_by_id
-from .tool_errors import (THEORY_COMMENT_EMPTY, THEORY_COMMENT_TOO_SHORT, THEORY_COMMENT_TRUNCATED,)
+from .tool_errors import (THEORY_COMMENT_EMPTY, THEORY_COMMENT_TOO_SHORT, THEORY_COMMENT_TRUNCATED, THEORY_COMMENT_TEMPLATE, THEORY_FINAL_TEXTUAL_SCORE, THEORY_FINAL_COMMENTS_REQUIRED, THEORY_FINAL_COMMENTS_TEXTUAL_SCORE,)
+
+
+def _parse_bool_arg(value: Any, *, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes"}:
+            return True
+        if normalized in {"false", "0", "no"}:
+            return False
+    if value is None:
+        return default
+    return bool(value)
+
+
+def _resolve_score_task_is_final(
+    args: dict[str, Any] | None,
+    *,
+    task_type: str | None,
+    question_index: Any,
+) -> bool:
+    payload = args if isinstance(args, dict) else {}
+
+    if "is_final" in payload:
+        return _parse_bool_arg(payload.get("is_final"), default=True)
+
+    if task_type == "theory":
+        return question_index is None
+
+    return True
+
+
+def _normalize_theory_tool_score_args(
+    args: dict[str, Any] | None,
+    task: dict[str, Any] | None,
+) -> dict[str, Any]:
+    payload = dict(args or {})
+    if not payload:
+        return payload
+
+    if not isinstance(task, dict) or task.get("type") != "theory":
+        return payload
+
+    if "points" not in payload:
+        return payload
+
+    try:
+        requested_points = float(payload.get("points"))
+    except Exception:
+        return payload
+
+    theory_max_points = int(task.get("max_points", 10) or 10)
+    normalized_points = float(max(1, min(theory_max_points, int(round(requested_points)))))
+    payload["points"] = normalized_points
+    return payload
 
 def _build_tests_payload(task: models.Task) -> list[dict[str, Any]]:
     extra = task.extra_config or {}
@@ -54,6 +110,7 @@ def _build_tests_payload(task: models.Task) -> list[dict[str, Any]]:
         result.append({
             "code": tc.code,
             "name": tc.name,
+            "description": tc.description,
             "language": tc.language,
             "input_data": input_data,
             "expected_output": tc.expected_output,
@@ -137,6 +194,9 @@ def _dispatch_tool_call(session: models.Session, tc: dict[str, Any], db: Session
 
     try:
         if name == "score_task":
+            task_id = args.get("task_id")
+            task = _get_task_by_id(session.scenario, task_id) if task_id else None
+            args = _normalize_theory_tool_score_args(args, task)
             return _apply_score(session, args, db)
 
         if name == "web_search":
@@ -154,9 +214,34 @@ def _dispatch_tool_call(session: models.Session, tc: dict[str, Any], db: Session
             if not query:
                 return {"ok": False, "error": "query is required"}
 
+            task_id = (args.get("task_id") or "").strip()
+            question_index = args.get("question_index")
+
             corpus_id = getattr(session.scenario, "rag_corpus_id", None)
             if not corpus_id:
                 return {"ok": False, "error": "RAG corpus is not configured for this scenario"}
+
+            if not task_id:
+                return {"ok": False, "error": "task_id is required"}
+
+            if question_index is None:
+                return {"ok": False, "error": "question_index is required"}
+
+            task = _get_task_by_id(session.scenario, task_id)
+            if not task or task.get("type") != "theory":
+                return {"ok": False, "error": f"Task is not a theory task: {task_id}"}
+
+            candidate_message = find_candidate_answer_message(
+                session=session,
+                db=db,
+                task=task,
+                question_index=int(question_index),
+            )
+            if not candidate_message:
+                return {
+                    "ok": False,
+                    "error": f"Candidate has not answered question_index={question_index} yet."
+                }
 
             top_k = int(args.get("top_k") or 5)
             results = search_document_chunks(
@@ -165,15 +250,63 @@ def _dispatch_tool_call(session: models.Session, tc: dict[str, Any], db: Session
                 query=query,
                 top_k=top_k,
             )
+
+            existing = get_existing_validation(
+                session_id=session.id,
+                task_id=task_id,
+                question_index=int(question_index),
+                candidate_message_id=candidate_message.id,
+                db=db,
+            )
+
+            payload = [item.model_dump() for item in results]
+
+            if existing:
+                existing.query = query
+                existing.status = "completed"
+                existing.result_count = len(payload)
+                existing.evidence = payload
+                db.add(existing)
+                db.commit()
+                db.refresh(existing)
+                validation = existing
+            else:
+                validation = models.TheoryFactValidation(
+                    session_id=session.id,
+                    task_id=task_id,
+                    question_index=int(question_index),
+                    candidate_message_id=candidate_message.id,
+                    query=query,
+                    status="completed",
+                    result_count=len(payload),
+                    evidence=payload,
+                )
+                db.add(validation)
+                db.commit()
+                db.refresh(validation)
+
             return {
                 "ok": True,
-                "results": [item.model_dump() for item in results],
+                "task_id": task_id,
+                "question_index": int(question_index),
+                "validation_saved": True,
+                "results": payload,
             }
 
         if name == "run_code":
+            task_id = args.get("task_id")
+
+            current_task = _get_task_by_id(session.scenario, session.current_task_id or "")
+            current_task_type = current_task.get("type") if current_task else None
+            if current_task_type != "coding":
+                return {
+                    "ok": False,
+                    "task_id": task_id,
+                    "error": "run_code is not available in the current block",
+                }
+
             language = (args.get("language") or "").strip()
             code = args.get("code") or ""
-            task_id = args.get("task_id")
 
             if not code:
                 return {"ok": False, "task_id": task_id, "error": "code is required"}
@@ -218,6 +351,14 @@ def _dispatch_tool_call(session: models.Session, tc: dict[str, Any], db: Session
             }
 
         if name == "run_sql":
+            current_task = _get_task_by_id(session.scenario, session.current_task_id or "")
+            current_task_type = current_task.get("type") if current_task else None
+            if current_task_type != "sql":
+                return {
+                    "ok": False,
+                    "error": "run_sql is not available in the current block",
+                }
+
             query = (args.get("query") or "").strip()
             if not query:
                 return {"ok": False, "error": "query is required"}
@@ -321,8 +462,12 @@ def _apply_score(session: models.Session, args: dict[str, Any], db: Session) -> 
 
     task_type = task.get("type")
     max_points = int(task.get("max_points", 0) or 0)
-    is_final = bool(args.get("is_final", True))
     question_index = args.get("question_index")
+    is_final = _resolve_score_task_is_final(
+        args,
+        task_type=task_type,
+        question_index=question_index,
+    )
 
     try:
         points = float(args.get("points", 0))
@@ -331,6 +476,7 @@ def _apply_score(session: models.Session, args: dict[str, Any], db: Session) -> 
 
     points = float(int(round(points)))
     comment = (args.get("comment") or "").strip()
+    final_comments = _normalize_theory_final_comments(args.get("comments"))
     if not comment:
         return {"ok": False, "error": THEORY_COMMENT_EMPTY}
 
@@ -338,16 +484,18 @@ def _apply_score(session: models.Session, args: dict[str, Any], db: Session) -> 
         if len(comment) < 30:
             return {"ok": False, "error": THEORY_COMMENT_TOO_SHORT}
 
-        # Жёсткую проверку секций временно отключаем:
-        # модель часто ломается на 4-м вопросе именно здесь.
-        # Секции оставляем как требование промпта, а не как блокирующую backend-валидацию.
-        # comment_structure_error = _validate_theory_comment_structure(comment)
-        # if comment_structure_error:
-        #     return {"ok": False, "error": comment_structure_error}
-
         trimmed = comment.rstrip()
         if trimmed.endswith(("—", "-", ":", ",", ";")):
             return {"ok": False, "error": THEORY_COMMENT_TRUNCATED}
+
+        if is_final:
+            final_comment_error = _validate_final_theory_comment(comment)
+            if final_comment_error:
+                return {"ok": False, "error": final_comment_error}
+
+            final_comments_error = _validate_final_theory_comments(task, final_comments)
+            if final_comments_error:
+                return {"ok": False, "error": final_comments_error}
 
         tail = comment[-12:].strip().lower()
         suspicious_tail = (
@@ -355,6 +503,7 @@ def _apply_score(session: models.Session, args: dict[str, Any], db: Session) -> 
             or tail in {"и", "а", "но", "что", "как", "к", "по", "в", "на", "с"}
             or re.search(r"\b[а-яa-z]{1,2}$", comment.lower()) is not None
         )
+
     if task_type in {"coding", "sql"}:
         comment_error = _validate_practice_comment(comment, task_type)
         if comment_error:
@@ -364,6 +513,10 @@ def _apply_score(session: models.Session, args: dict[str, Any], db: Session) -> 
         theory_max_points = int(task.get("max_points", 10) or 10)
         if points < 1 or points > theory_max_points:
             return {"ok": False, "error": f"Theory score should be within [1, {theory_max_points}]"}
+
+        template_error = _validate_theory_comment_not_template(comment)
+        if template_error:
+            return {"ok": False, "error": template_error}
 
         if not is_final:
             validation_error = _validate_theory_intermediate_score_args(task, question_index)
@@ -422,12 +575,11 @@ def _apply_score(session: models.Session, args: dict[str, Any], db: Session) -> 
             if aggregated["avg_points"] is None:
                 return {"ok": False, "error": "Theory final score requires intermediate scores first."}
 
-            requested_points = points
-            penalized_avg = _apply_theory_penalties(
+            points = _compute_final_theory_points(
+                points,
                 aggregated["avg_points"],
-                aggregated["comments"],
+                theory_max_points,
             )
-            points = _compute_final_theory_points(requested_points, penalized_avg, theory_max_points,)
             question_index = None
 
         score = models.Score(
@@ -445,15 +597,19 @@ def _apply_score(session: models.Session, args: dict[str, Any], db: Session) -> 
             "ok": True,
             "task_id": task_id,
             "points": points,
-            "comment": comment,
             "is_final": is_final,
             "question_index": question_index,
         }
 
+
+        response["comment"] = comment
+
         if is_final:
             current_scores = session.scores or {}
             session.scores = {**current_scores, task_id: points}
+            response["avg_points"] = aggregated["avg_points"]
             response["aggregated"] = aggregated
+            response["comments"] = final_comments
 
         db.commit()
         db.refresh(score)
@@ -503,7 +659,7 @@ def _theory_ready_for_scoring(session: models.Session, db: Session, task: dict) 
     history = (
         db.query(models.Message)
         .filter_by(session_id=session.id)
-        .order_by(models.Message.created_at)
+        .order_by(models.Message.created_at.asc(), models.Message.id.asc())
         .all()
     )
 
@@ -559,7 +715,7 @@ def _theory_intermediate_ready_for_scoring(
     history = (
         db.query(models.Message)
         .filter_by(session_id=session.id)
-        .order_by(models.Message.created_at)
+        .order_by(models.Message.created_at.asc(), models.Message.id.asc())
         .all()
     )
 
@@ -632,13 +788,97 @@ def _validate_theory_comment_structure(comment: str) -> str | None:
         return f"Theory comment must contain sections: {', '.join(required_sections)}"
     return None
 
+def _validate_theory_comment_not_template(comment: str) -> str | None:
+    raw = (comment or "").strip()
+    low = raw.lower()
+
+    normalized = re.sub(r"[\s:;/,.\-–—]+", " ", low).strip()
+
+    template_variants = {
+        "верно не хватает ошибка сомнение",
+        "верно не хватает ошибка",
+        "корректно не хватает ошибка",
+        "что верно чего не хватает ошибка сомнение",
+    }
+
+    if normalized in template_variants:
+        return THEORY_COMMENT_TEMPLATE
+
+    markers = ["верно", "не хватает", "ошибка"]
+    has_all_markers = all(marker in low for marker in markers)
+
+    if has_all_markers and len(raw) < 80:
+        return THEORY_COMMENT_TEMPLATE
+
+    if re.fullmatch(
+        r"(верно|корректно)\s*[/|,;\-]?\s*не\s*хватает\s*[/|,;\-]?\s*ошибка(?:\s*/\s*сомнение)?",
+        low
+    ):
+        return THEORY_COMMENT_TEMPLATE
+
+    return None
+
+def _normalize_theory_final_comments(raw_comments: Any) -> list[str]:
+    if not isinstance(raw_comments, list):
+        return []
+    return [str(item).strip() for item in raw_comments if str(item).strip()]
+
+
+def _validate_final_theory_comments(task: dict[str, Any], comments: list[str]) -> str | None:
+    question_count = _theory_question_count(task)
+    if question_count <= 0:
+        return None
+
+    if len(comments) != question_count:
+        return THEORY_FINAL_COMMENTS_REQUIRED
+
+    forbidden_patterns = [
+        r"\b\d+\s*/\s*10\b",
+        r"\b\d+\s+из\s+10\b",
+        r"\bоценка\s*[:\-]?\s*\d+\b",
+        r"\b\d+\s+балл",
+    ]
+    for item in comments:
+        low = (item or "").lower()
+        if not low:
+            return THEORY_FINAL_COMMENTS_REQUIRED
+        if any(re.search(pattern, low) for pattern in forbidden_patterns):
+            return THEORY_FINAL_COMMENTS_TEXTUAL_SCORE
+
+    return None
+
+def _validate_final_theory_comment(comment: str) -> str | None:
+    low = (comment or "").lower()
+
+    forbidden_patterns = [
+        r"\b\d+\s*/\s*10\b",
+        r"\bставлю\s+\d+\b",
+        r"\bоценка\s*[:\-]?\s*\d+\b",
+        r"\b\d+\s+из\s+10\b",
+        r"\bзаслуживает\s+\d+\b",
+        r"\bитоговая\s+оценка\s*[:\-]?\s*\d+\b",
+    ]
+
+    for pattern in forbidden_patterns:
+        if re.search(pattern, low):
+            return THEORY_FINAL_TEXTUAL_SCORE
+
+    return None
+
 def _compute_final_theory_points(
     requested_points: float,
     aggregated_avg: int,
     max_points: int,
 ) -> float:
-    capped = min(int(round(requested_points)), int(round(aggregated_avg)))
-    return float(max(1, min(max_points, capped)))
+    normalized_requested = int(round(requested_points))
+    normalized_requested = max(1, min(max_points, normalized_requested))
+
+    normalized_avg = int(round(aggregated_avg))
+    normalized_avg = max(1, min(max_points, normalized_avg))
+
+    # Финальный theory score не должен завышать уже рассчитанное среднее
+    # по промежуточным оценкам, но может быть ниже этого среднего.
+    return float(min(normalized_requested, normalized_avg))
 
 def _aggregate_theory_intermediate_scores(session: models.Session, db: Session, task_id: str) -> dict[str, Any]:
     task = _get_task_by_id(session.scenario, task_id) or {}

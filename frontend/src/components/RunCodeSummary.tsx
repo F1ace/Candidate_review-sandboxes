@@ -33,25 +33,25 @@ export function RunCodeSummary({ runCodeResult }: RunCodeSummaryProps) {
 
                 {!hasError && test.validation_mode === "custom_checker" && (
                   <>
-                    <p>Проверка: кастомное правило</p>
-                    <p>Actual: {JSON.stringify(test.actual)}</p>
+                    <p className="result-field">
+                      Правило: {test.description || test.name || "пользовательское правило"}
+                    </p>
+                    <p className="result-field">
+                      Фактическое: {JSON.stringify(test.actual)}
+                    </p>
                   </>
                 )}
 
-                {!hasError && test.validation_mode === "expected_error" && (
+                {!hasError && test.validation_mode !== "custom_checker" && (
                   <>
-                    <p>Expected error: {JSON.stringify(test.expected)}</p>
-                    <p>Actual: {JSON.stringify(test.actual)}</p>
+                    <p className="result-field">
+                      Ожидаемое: {JSON.stringify(test.expected)}
+                    </p>
+                    <p className="result-field">
+                      Фактическое: {JSON.stringify(test.actual)}
+                    </p>
                   </>
                 )}
-
-                {!hasError &&
-                  (!test.validation_mode || test.validation_mode === "exact") && (
-                    <>
-                      <p>Expected: {JSON.stringify(test.expected)}</p>
-                      <p>Actual: {JSON.stringify(test.actual)}</p>
-                    </>
-                  )}
               </div>
             );
           })}

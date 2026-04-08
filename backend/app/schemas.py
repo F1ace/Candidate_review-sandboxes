@@ -1,4 +1,4 @@
-from datetime import datetime
+﻿from datetime import datetime
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field
@@ -182,11 +182,13 @@ class ScoreCreate(BaseModel):
     task_id: str
     points: float
     comment: Optional[str] = None
-    is_final: bool = True
+    comments: Optional[list[str]] = None
+    is_final: Optional[bool] = None
     question_index: Optional[int] = None
 
 
 class ScoreOut(ScoreCreate):
+    is_final: bool
     id: int
     session_id: str
     created_at: datetime
