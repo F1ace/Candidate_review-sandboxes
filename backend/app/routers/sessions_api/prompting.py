@@ -50,7 +50,9 @@ def _current_task_payload_for_prompt(task: dict[str, Any] | None) -> dict[str, A
         ][:12]
     else:
         brief = (
-            task.get("description")
+            task.get("description_for_candidate")
+            or task.get("statement_md")
+            or task.get("description")
             or task.get("prompt")
             or task.get("text")
             or task.get("title")
@@ -81,7 +83,7 @@ def _build_system_prompt(session: models.Session, rag_available: bool) -> str:
         "<SYSTEM>\n"
         "Ты AI-интервьюер для фиксированного сценария.\n"
         "Всегда отвечай кандидату на русском языке.\n"
-        "Никогда не выводи <think>, JSON, сырые tool dump, channel tags и служебные ошибки.\n"
+        "Никогда не выводи <think>, JSON, сырой tool dump, channel tags и служебные ошибки.\n"
         f"Роль: {_trim_prompt_text(role.name, 60)} ({_trim_prompt_text(role.slug, 40)}). "
         f"Сценарий: {_trim_prompt_text(scenario.name, 80)} ({_trim_prompt_text(scenario.slug, 40)}). "
         f"Уровень: {_trim_prompt_text(scenario.difficulty, 20)}. "
@@ -92,13 +94,13 @@ def _build_system_prompt(session: models.Session, rag_available: bool) -> str:
         "Правила:\n"
         "- Иди строго по порядку сценария и продолжай с текущей задачи.\n"
         "- Если вступление уже было показано, не повторяй его.\n"
-        "- Начни с приветствия, объясни всё, что знаешь, роль, сценарий и цель интервью, затем сразу начни интервью.\n"
+        "- Для первого ответа: одно короткое приветствие и сразу первый вопрос текущего задания. Не пересказывай весь сценарий интервью.\n"
         "- Theory: задавай по одному вопросу в формате 'Вопрос i/N: ...'.\n"
         "- Theory: после каждого ответа сохраняй ровно один промежуточный score_task с is_final=false и question_index=i.\n"
         "- Theory: если доступен RAG, сначала вызывай rag_search, затем промежуточный score_task.\n"
         "- Theory: доступны только rag_search, web_search и score_task. Никогда не вызывай run_code и run_sql.\n"
         "- Theory: финальный score_task разрешён только после того, как оценены все вопросы теоретического блока.\n"
-        "- После успешного финального theory score_task напиши обычное итоговое сообщение: теоретический блок завершён, с кратким описанием ответа кандидата, комментарии по каждому ответу, сильные стороны, зоны роста и точная оценка из points. Не добавляй переход к практике.\n"
+        "- После успешного финального theory score_task напиши итоговое сообщение без tool-call: теоретический блок завершён, комментарии по каждому ответу, сильные стороны, зоны роста и точная оценка из points. Не добавляй переход к практике.\n"
         "- Coding: код кандидата должен быть в редакторе, а не в чате. Используй run_code, затем score_task.\n"
         "- SQL: используй run_sql, затем score_task.\n"
         "- Никогда не печатай кандидату аргументы tools и служебные маркеры.\n"
@@ -141,14 +143,15 @@ def _strip_intro(text: str, intro_done: bool) -> str:
 
 
 _FIRST_TURN_GREETING_RE = re.compile(
-    r"^\s*(?:здравствуйте|добрый\s+(?:день|вечер)|привет(?:ствую)?|рад(?:а|ы)?\s+видеть)",
+    r"^\s*здравствуйте",
     re.IGNORECASE,
 )
+_THEORY_QUESTION_RE = re.compile(r"(?im)^\s*\*?\*?\s*вопрос\s+\d+\s*/\s*\d+\s*:")
 
 
 def _ensure_first_model_greeting(text: str, session: models.Session) -> str:
     cleaned = _strip_think(text or "").strip()
-    if not cleaned or _FIRST_TURN_GREETING_RE.search(cleaned):
+    if cleaned and _FIRST_TURN_GREETING_RE.search(cleaned):
         return cleaned
 
     role_name = _trim_prompt_text(session.role.name, 60)
@@ -158,6 +161,60 @@ def _ensure_first_model_greeting(text: str, session: models.Session) -> str:
         f'по сценарию "{scenario_name}".'
     )
     return f"{intro}\n\n{cleaned}"
+
+
+def _build_first_task_prompt(session: models.Session) -> str:
+    tasks = session.scenario.tasks or []
+    current_task_id = session.current_task_id or (tasks[0].get("id") if tasks else "")
+    current_task = next((task for task in tasks if task.get("id") == current_task_id), None)
+    if not current_task:
+        return ""
+
+    task_type = current_task.get("type")
+    if task_type == "theory":
+        questions = current_task.get("questions") or []
+        if not questions:
+            return ""
+        first_question = questions[0]
+        question_text = _question_text_for_prompt(first_question)
+        if not question_text:
+            return ""
+        return f"**Вопрос 1/{len(questions)}:** {question_text}"
+
+    if task_type == "coding":
+        title = _trim_prompt_text(current_task.get("title") or "Практическое задание", 120)
+        return f"**Практическое задание:** {title}"
+
+    if task_type == "sql":
+        title = _trim_prompt_text(current_task.get("title") or "SQL-задание", 120)
+        return f"**SQL-задание:** {title}"
+
+    return ""
+
+
+def _ensure_first_model_opening(text: str, session: models.Session) -> str:
+    cleaned = _strip_think(text or "").strip()
+    first_task_prompt = _build_first_task_prompt(session)
+    tasks = session.scenario.tasks or []
+    current_task_id = session.current_task_id or (tasks[0].get("id") if tasks else "")
+    current_task = next((task for task in tasks if task.get("id") == current_task_id), None)
+
+    if not first_task_prompt:
+        return cleaned
+
+    task_type = (current_task or {}).get("type")
+    has_question = False
+    if task_type == "theory":
+        has_question = _THEORY_QUESTION_RE.search(cleaned or "") is not None
+    else:
+        has_question = first_task_prompt in (cleaned or "")
+
+    if has_question:
+        return cleaned
+
+    if cleaned:
+        return f"{cleaned}\n\n{first_task_prompt}"
+    return first_task_prompt
 
 
 def _extract_inline_tool_call(

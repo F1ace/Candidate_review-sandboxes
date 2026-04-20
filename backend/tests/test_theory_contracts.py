@@ -2,6 +2,7 @@
 
 from app.routers.sessions_api.theory_contracts import (
     build_theory_final_message_contract,
+    finalize_theory_final_message,
     sanitize_theory_final_message,
     theory_final_message_has_wrong_score,
     theory_final_message_too_generic,
@@ -268,3 +269,132 @@ def test_theory_contract_removes_prefix_table_garbage_before_comments() -> None:
     assert cleaned.count("Комментарии по каждому ответу") == 1
     assert "Кандидат правильно различил задачи регрессии и классификации" in cleaned
     assert cleaned.index("Комментарии по каждому ответу") < cleaned.index("Сильные стороны")
+
+
+def test_finalize_theory_message_removes_system_noise_and_restores_required_structure() -> None:
+    task = {
+        "id": "T-DOCS",
+        "type": "theory",
+        "max_points": 10,
+        "questions": ["Что такое идемпотентность и как она связана с POST?"],
+    }
+    score_result = {
+        "ok": True,
+        "task_id": "T-DOCS",
+        "points": 4.0,
+        "comment": (
+            "Кандидат понимает базовую идею идемпотентности и корректно связывает её с POST, "
+            "но ответу не хватило более точного разведения HTTP-семантики и поведения конкретного API."
+        ),
+        "comments": [
+            (
+                "Кандидат верно описал базовую идею идемпотентности и отметил, что POST обычно не считается "
+                "идемпотентным, но не раскрыл границу между свойством метода и конкретной реализацией API."
+            )
+        ],
+    }
+    contract = build_theory_final_message_contract(task, score_result)
+    assert contract is not None
+
+    dirty_text = (
+        "Финальный score_task по теоретическому блоку уже успешно выполнен.\n"
+        "Теперь нужно написать итоговое сообщение обычным текстом.\n"
+        "<THEORY_FINAL_MESSAGE_CONTRACT>\n"
+        '{"task_id":"T-DOCS","points":4,"max_points":10}\n'
+        "</THEORY_FINAL_MESSAGE_CONTRACT>\n\n"
+        "**Комментарии по каждому ответу**\n\n"
+        "| Вопрос | Оценка | Комментарий |\n"
+        "|--------|--------|-------------|\n"
+        "| 1 | 9/10 | старый мусор |\n"
+    )
+
+    cleaned = finalize_theory_final_message(dirty_text, contract)
+
+    assert cleaned.startswith("Теоретический блок завершён.")
+    assert "Комментарии по каждому ответу" in cleaned
+    assert "Сильные стороны" in cleaned
+    assert "Зоны роста" in cleaned
+    assert "**Итоговая оценка по теоретическому блоку:** 4/10." in cleaned
+    assert "Кандидат верно описал базовую идею идемпотентности" in cleaned
+    assert "Финальный score_task" not in cleaned
+    assert "THEORY_FINAL_MESSAGE_CONTRACT" not in cleaned
+    assert "| Вопрос |" not in cleaned
+
+
+def test_finalize_theory_message_deduplicates_existing_score_lines() -> None:
+    task = {
+        "id": "T-ML",
+        "type": "theory",
+        "max_points": 10,
+        "questions": [
+            "Чем отличаются задачи регрессии и классификации?",
+        ],
+    }
+    score_result = {
+        "ok": True,
+        "task_id": "T-ML",
+        "points": 8.0,
+        "comment": "Кандидат дал сильный итог по блоку.",
+        "comments": [
+            "Кандидат чётко различил задачи регрессии и классификации и привёл корректные примеры."
+        ],
+    }
+    contract = build_theory_final_message_contract(task, score_result)
+    assert contract is not None
+
+    dirty_text = (
+        "Теоретический блок завершён.\n\n"
+        "**Комментарии по каждому ответу**\n\n"
+        "- **1. Чем отличаются задачи регрессии и классификации?:** Кандидат чётко различил задачи регрессии и классификации и привёл корректные примеры.\n\n"
+        "**Сильные стороны кандидата**\n\n"
+        "- Хорошо ориентируется в базовых постановках задач.\n\n"
+        "**Зоны роста**\n\n"
+        "- Можно глубже раскрывать практические ограничения моделей.\n\n"
+        "Оценка 8/10\n\n"
+        "**Итоговая оценка по теоретическому блоку:** 8/10.\n\n"
+        "**Итоговая оценка по теоретическому блоку:** 8/10."
+    )
+
+    cleaned = finalize_theory_final_message(dirty_text, contract)
+
+    assert cleaned.count("Оценка 8/10") == 0
+    assert cleaned.count("**Итоговая оценка по теоретическому блоку:** 8/10.") == 1
+
+
+def test_finalize_theory_message_removes_verbose_score_line_variant() -> None:
+    task = {
+        "id": "T-ML",
+        "type": "theory",
+        "max_points": 10,
+        "questions": [
+            "Как работает логистическая регрессия?",
+        ],
+    }
+    score_result = {
+        "ok": True,
+        "task_id": "T-ML",
+        "points": 3.0,
+        "comment": "Кандидат частично разобрался в теме, но допустил несколько заметных ошибок.",
+        "comments": [
+            "Ответ содержит несколько ошибок в описании сигмоидальной функции и интерпретации вероятности."
+        ],
+    }
+    contract = build_theory_final_message_contract(task, score_result)
+    assert contract is not None
+
+    dirty_text = (
+        "Теоретический блок завершён.\n\n"
+        "**Комментарии по каждому ответу**\n\n"
+        "- **1. Как работает логистическая регрессия?:** Ответ содержит несколько ошибок в описании сигмоидальной функции и интерпретации вероятности.\n\n"
+        "**Сильные стороны**\n\n"
+        "- Быстро реагирует на вопросы.\n\n"
+        "**Зоны роста**\n\n"
+        "- Нужна более точная интерпретация вероятностного вывода.\n\n"
+        "**Оценка:** 3 из 10 возможных баллов.\n\n"
+        "**Итоговая оценка по теоретическому блоку:** 3/10."
+    )
+
+    cleaned = finalize_theory_final_message(dirty_text, contract)
+
+    assert "3 из 10 возможных баллов" not in cleaned
+    assert cleaned.count("**Итоговая оценка по теоретическому блоку:** 3/10.") == 1

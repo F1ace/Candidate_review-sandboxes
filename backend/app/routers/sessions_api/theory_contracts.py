@@ -27,6 +27,19 @@ _STRENGTHS_HEADER_RE = re.compile(
 _GROWTH_HEADER_RE = re.compile(r"(?im)^\s*(?:\*\*)?\s*зоны роста(?:\*\*)?\s*:?\s*$")
 _FINAL_SCORE_RE = re.compile(r"(?im)^\s*(?:\*\*)?\s*(?:итоговая\s+)?оценка")
 _MARKDOWN_TABLE_RE = re.compile(r"(?m)^\s*\|.*\|\s*$|^\s*:?-{3,}:?(?:\s*\|\s*:?-{3,}:?)+\s*$")
+_SERVICE_NOISE_RE = re.compile(
+    r"(?i)(theory_final_message_contract|финальный score_task|tool call|tool dump|"
+    r"не используй|не добавляй|верни только|ключевые требования|обязательные поля|"
+    r"summary_comment|question_comments|task_id|max_points|<\|channel\|>|<\|message\|>|"
+    r"теперь нужно написать итоговое сообщение|напиши итоговое сообщение обычным текстом)"
+)
+_JSONISH_RE = re.compile(
+    r'^\s*[{"\[]|^\s*"(?:task_id|points|max_points|summary_comment|question_comments|comment|comments)"\s*:'
+)
+_CONTRAST_RE = re.compile(r"\b(?:но|однако|при этом|в то же время)\b", re.IGNORECASE)
+_INLINE_SCORE_LINE_RE = re.compile(
+    r"(?im)^\s*(?:\*\*)?\s*(?:итоговая\s+)?оценка(?:\s+по\s+теоретическому\s+блоку)?(?:\*\*)?\s*[:\-]?\s*\d+\s*(?:/\s*\d+|из\s+\d+)(?:\s+возможных\s+балл(?:ов|а)?)?\.?\s*$"
+)
 
 
 @dataclass(frozen=True)
@@ -131,7 +144,25 @@ def _classify_theory_section_header(line: str) -> str | None:
     if normalized in {"оценка", "итоговая оценка"}:
         return "score"
 
+    if normalized.startswith("оценка "):
+        return "score"
+
+    if normalized.startswith("итоговая оценка"):
+        return "score"
+
     return None
+
+
+def _is_theory_score_line(line: str) -> bool:
+    stripped = str(line or "").strip()
+    if not stripped:
+        return False
+
+    if _INLINE_SCORE_LINE_RE.search(stripped):
+        return True
+
+    normalized = _normalize_theory_section_header(stripped)
+    return "оценка" in normalized and _SCORE_RE.search(stripped) is not None
 
 
 def _split_theory_message_sections(
@@ -165,8 +196,17 @@ def _is_theory_garbage_prefix_line(line: str) -> bool:
     if _MARKDOWN_TABLE_RE.search(stripped):
         return True
 
+    if _SERVICE_NOISE_RE.search(stripped):
+        return True
+
+    if _JSONISH_RE.search(stripped):
+        return True
+
     normalized = _normalize_theory_section_header(stripped)
     if "|" in stripped and ("вопрос" in normalized or "оценка" in normalized):
+        return True
+
+    if _is_theory_score_line(stripped):
         return True
 
     return False
@@ -243,6 +283,234 @@ def sanitize_theory_final_message(
         blocks.append(comments_section)
 
     return "\n\n".join(blocks).strip()
+
+
+def _clean_theory_section_body(lines: list[str]) -> list[str]:
+    if not lines:
+        return []
+
+    body = lines[1:] if _classify_theory_section_header(lines[0]) else list(lines)
+    cleaned: list[str] = []
+    for line in body:
+        stripped = str(line or "").strip()
+        if not stripped:
+            if cleaned and cleaned[-1] == "":
+                continue
+            cleaned.append("")
+            continue
+
+        if _is_theory_garbage_prefix_line(stripped):
+            continue
+
+        cleaned.append(stripped)
+
+    while cleaned and not cleaned[0]:
+        cleaned = cleaned[1:]
+
+    while cleaned and not cleaned[-1]:
+        cleaned.pop()
+
+    return cleaned
+
+
+def _extract_section_body(
+    sections: list[tuple[str, list[str]]],
+    kind: str,
+) -> str:
+    for section_kind, lines in sections:
+        if section_kind != kind:
+            continue
+        body = "\n".join(_clean_theory_section_body(lines)).strip()
+        if body:
+            return body
+    return ""
+
+
+def _preferred_section_header(
+    sections: list[tuple[str, list[str]]],
+    kind: str,
+) -> str:
+    for section_kind, lines in sections:
+        if section_kind != kind or not lines:
+            continue
+        normalized = _normalize_theory_section_header(lines[0])
+        if kind == "strengths" and normalized == "сильные стороны кандидата":
+            return "**Сильные стороны кандидата**"
+        if kind == "growth":
+            return "**Зоны роста**"
+    if kind == "strengths":
+        return "**Сильные стороны**"
+    if kind == "growth":
+        return "**Зоны роста**"
+    return ""
+
+
+def _dedupe_lines(lines: list[str]) -> list[str]:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for line in lines:
+        normalized = re.sub(r"\s+", " ", str(line or "")).strip().casefold()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        unique.append(str(line).strip())
+    return unique
+
+
+def _split_strength_and_growth(comment: str) -> tuple[str | None, str | None]:
+    normalized = re.sub(r"\s+", " ", str(comment or "")).strip(" \t\r\n.-")
+    if not normalized:
+        return None, None
+
+    match = _CONTRAST_RE.search(normalized)
+    if match:
+        left = normalized[: match.start()].strip(" ,;:-")
+        right = normalized[match.end() :].strip(" ,;:-")
+        strength = left if left else None
+        growth = right if right else None
+        return strength, growth
+
+    lowered = normalized.casefold()
+    positive_markers = (
+        "верно",
+        "правильно",
+        "корректно",
+        "уверенно",
+        "хорошо",
+        "понима",
+        "объяснил",
+        "объяснила",
+        "раскрыл",
+        "раскрыла",
+        "привёл",
+        "привела",
+        "отметил",
+        "отметила",
+        "показал",
+        "показала",
+    )
+    negative_markers = (
+        "не ",
+        "нехват",
+        "недостат",
+        "ошиб",
+        "перепут",
+        "слаб",
+        "неточ",
+        "зона роста",
+        "стоит",
+        "нужно",
+        "полезно",
+        "лучше",
+    )
+
+    has_positive = any(marker in lowered for marker in positive_markers)
+    has_negative = any(marker in lowered for marker in negative_markers)
+
+    if has_positive and not has_negative:
+        return normalized, None
+    if has_negative and not has_positive:
+        return None, normalized
+    return normalized, None
+
+
+def _derive_strengths_and_growth(
+    contract: TheoryFinalMessageContract,
+) -> tuple[list[str], list[str]]:
+    strengths: list[str] = []
+    growth: list[str] = []
+
+    for item in contract.question_comments:
+        comment = str(item.comment or "").strip()
+        if not comment:
+            continue
+
+        strength_part, growth_part = _split_strength_and_growth(comment)
+
+        if strength_part:
+            strengths.append(
+                f"- По вопросу {item.question_index}: {strength_part.rstrip(' .!?:;')}."
+            )
+        if growth_part:
+            growth.append(
+                f"- По вопросу {item.question_index}: {growth_part.rstrip(' .!?:;')}."
+            )
+
+    strengths = _dedupe_lines(strengths)[:3]
+    growth = _dedupe_lines(growth)[:3]
+
+    if not strengths:
+        strengths = [
+            "- В ответах есть база для дальнейшего обсуждения темы и точки, на которые можно опереться в следующем раунде."
+        ]
+
+    if not growth:
+        growth = [
+            "- Для более сильного результата важно точнее раскрывать детали ответов и подкреплять их более конкретными формулировками."
+        ]
+
+    return strengths, growth
+
+
+def _build_theory_intro_block(
+    prefix_block: str,
+    contract: TheoryFinalMessageContract,
+) -> str:
+    prefix_lines = [
+        str(line or "").strip()
+        for line in str(prefix_block or "").splitlines()
+        if str(line or "").strip() and not _is_theory_score_line(line)
+    ]
+    cleaned_prefix = re.sub(r"\s+", " ", " ".join(prefix_lines)).strip()
+    cleaned_prefix = re.sub(_SCORE_RE, "", cleaned_prefix).strip(" \t\r\n,;:-")
+    cleaned_prefix = re.sub(r"\s{2,}", " ", cleaned_prefix).strip()
+
+    summary = re.sub(r"\s+", " ", contract.summary_comment or "").strip()
+    summary = re.sub(_SCORE_RE, "", summary).strip(" \t\r\n,;:-")
+    summary = re.sub(r"\s{2,}", " ", summary).strip()
+
+    if cleaned_prefix:
+        return cleaned_prefix
+
+    if summary:
+        return f"Теоретический блок завершён. {summary}"
+
+    return "Теоретический блок завершён."
+
+
+def finalize_theory_final_message(
+    text: str,
+    contract: TheoryFinalMessageContract,
+) -> str:
+    sanitized = sanitize_theory_final_message(text, contract)
+    prefix_lines, sections = _split_theory_message_sections(sanitized)
+    prefix_block = "\n".join(_clean_theory_prefix_lines(prefix_lines)).strip()
+
+    intro_block = _build_theory_intro_block(prefix_block, contract)
+    comments_block = build_theory_question_comments_section(contract).strip()
+
+    strengths_body = _extract_section_body(sections, "strengths")
+    growth_body = _extract_section_body(sections, "growth")
+    strengths_header = _preferred_section_header(sections, "strengths")
+    growth_header = _preferred_section_header(sections, "growth")
+    derived_strengths, derived_growth = _derive_strengths_and_growth(contract)
+
+    strengths_block = (
+        f"{strengths_header}\n\n" + (strengths_body or "\n".join(derived_strengths))
+    ).strip()
+    growth_block = (
+        f"{growth_header}\n\n" + (growth_body or "\n".join(derived_growth))
+    ).strip()
+    score_block = f"**Итоговая оценка по теоретическому блоку:** {contract.points}/{contract.max_points}."
+
+    blocks = [
+        intro_block,
+        comments_block,
+        strengths_block,
+        growth_block,
+        score_block,
+    ]
+    return "\n\n".join(block for block in blocks if block).strip()
 
 
 def build_theory_final_message_contract(

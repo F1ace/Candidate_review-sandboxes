@@ -15,7 +15,7 @@ from .dispatch import (
 from .practice import _score_feedback
 from .prompting import (
     _build_system_prompt,
-    _ensure_first_model_greeting,
+    _ensure_first_model_opening,
     _extract_inline_tool_call,
     _normalize_lm_messages,
     _strip_intro,
@@ -29,7 +29,7 @@ from .tool_call_utils import (
 )
 from .tools import theory_tools, coding_tools, sql_tools, rag_search_only_tools
 from .theory_retry import (build_theory_comment_retry_message, build_final_theory_comment_retry_message, force_pending_theory_intermediate_score, force_final_theory_score, has_unscored_answer_for_current_theory_question, resolve_current_task_id, score_task_only_tools, is_retryable_final_theory_score_error, is_retryable_theory_score_error,)
-from .theory_contracts import (build_theory_final_message_contract, build_theory_final_message_prompt, build_theory_final_message_repair_prompt, sanitize_theory_final_message, theory_final_message_has_wrong_score, theory_final_message_too_generic,)
+from .theory_contracts import (build_theory_final_message_contract, build_theory_final_message_prompt, build_theory_final_message_repair_prompt, finalize_theory_final_message, sanitize_theory_final_message, theory_final_message_has_wrong_score, theory_final_message_too_generic,)
 
 def _human_tool_error(result: dict) -> str:
     return (
@@ -259,11 +259,10 @@ def call_model(session_id: str, db: Session):
         messages.append({
             "role": "system",
             "content": (
-                "Это САМЫЙ ПЕРВЫЙ ответ модели в этой сессии.\n"
-                "Сначала кратко поприветствуй кандидата, "
-                "объясни, что это интервью на роль и по сценарию, "
-                "а затем сразу задай первый вопрос первого задания.\n"
-                "Не пропускай приветствие."
+                "Это первый ответ модели в этой сессии.\n"
+                "Нужно дать одно короткое приветствие, "
+                "а затем сразу задать первый вопрос первого задания.\n"
+                "Не пересказывай весь сценарий интервью и не пропускай вопрос."
             ),
         })
 
@@ -1000,6 +999,7 @@ def call_model(session_id: str, db: Session):
                     if not _looks_like_tool_dump(repair_text):
                         final_msg = repair_msg
                         final_text = repair_text
+                final_text = finalize_theory_final_message(final_text, theory_contract)
 
     # Если модель после score_task напечатала raw tool-dump вместо нормального текста,
     # не сохраняем этот мусор в чат.
@@ -1064,9 +1064,9 @@ def call_model(session_id: str, db: Session):
         if task_obj and task_obj.get("type") == "theory" and bool(last_score_result.get("is_final")):
             theory_contract = build_theory_final_message_contract(task_obj, last_score_result)
             if theory_contract:
-                final_text = sanitize_theory_final_message(final_text, theory_contract)
-    if final_text and not has_model_messages:
-        final_text = _ensure_first_model_greeting(final_text, session)
+                final_text = finalize_theory_final_message(final_text, theory_contract)
+    if not has_model_messages:
+        final_text = _ensure_first_model_opening(final_text, session)
     final_text = _strip_intro(final_text, has_model_messages).strip()
 
     final_msg["content"] = final_text or ""

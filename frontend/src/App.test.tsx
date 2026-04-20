@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -163,5 +163,130 @@ describe("Admin materials UI", () => {
     );
     expect(updateCall).toBeTruthy();
     expect(JSON.parse(String(updateCall?.[1]?.body))).toEqual({ rag_corpus_id: 10 });
+  });
+});
+
+const createPracticeFeedbackFetchMock = () =>
+  vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = toPath(input);
+    const method = (init?.method ?? "GET").toUpperCase();
+
+    if (method === "GET" && path === "/roles") {
+      return jsonResponse([{ id: 1, name: "Code Role", slug: "code-role", description: "Practice role" }]);
+    }
+    if (method === "GET" && path === "/scenarios") {
+      return jsonResponse([
+        {
+          id: 21,
+          role_id: 1,
+          name: "Code Scenario",
+          slug: "code-scenario",
+          description: "Checks coding output",
+          difficulty: "middle",
+          rag_corpus_id: null,
+          tasks: [
+            {
+              id: "C1",
+              type: "coding",
+              title: "Two sum",
+              language: "python",
+              description_for_candidate: "Implement two_sum",
+              max_points: 10,
+            },
+          ],
+        },
+      ]);
+    }
+    if (method === "GET" && path === "/sql-scenarios") {
+      return jsonResponse([]);
+    }
+    if (method === "GET" && path === "/rag/corpora") {
+      return jsonResponse([]);
+    }
+    if (method === "POST" && path === "/sessions") {
+      return jsonResponse({ id: "sess-1" }, 201);
+    }
+    if (method === "GET" && path === "/sessions/sess-1") {
+      return jsonResponse({ scores: {} });
+    }
+    if (method === "GET" && path === "/sessions/sess-1/lm/chat-stream") {
+      return new Response(
+        `data: ${JSON.stringify({ type: "done", content: "Здравствуйте! **Практическое задание:** Two sum" })}\n\n`,
+        {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        },
+      );
+    }
+    if (method === "POST" && path === "/sessions/sess-1/practice/code") {
+      return jsonResponse({
+        reply:
+          "Финальное сообщение модели: решение получилось рабочим, все тесты пройдены, а следующим шагом стоит добавить ещё пару собственных проверок на крайние случаи.",
+        tool_results: [
+          {
+            name: "run_code",
+            result: {
+              ok: true,
+              task_id: "C1",
+              result: {
+                success: true,
+                stdout: "",
+                stderr: "",
+                exit_code: 0,
+                details: null,
+                tests_total: 4,
+                tests_passed: 4,
+                test_results: [
+                  { name: "basic", passed: true },
+                  { name: "subset", passed: true },
+                  { name: "negative", passed: true },
+                  { name: "edge", passed: true },
+                ],
+              },
+            },
+          },
+          {
+            name: "score_task",
+            result: {
+              ok: true,
+              task_id: "C1",
+              points: 10,
+              comment:
+                "Корректность: Шаблонный комментарий score_task.\nКачество кода: Шаблонный комментарий score_task.\nСложность и эффективность: Шаблонный комментарий score_task.\nЧто можно улучшить: Шаблонный комментарий score_task.",
+              is_final: true,
+            },
+          },
+        ],
+      });
+    }
+
+    return new Response(`Unhandled ${method} ${path}`, { status: 500 });
+  });
+
+describe("Practice feedback UI", () => {
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it("shows model reply for coding review instead of raw score_task comment when both are available", async () => {
+    const user = userEvent.setup();
+    const fetchMock = createPracticeFeedbackFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+
+    await user.click(await screen.findByText("Code Role"));
+    await user.click(await screen.findByText("Checks coding output"));
+    await user.click(screen.getByTestId("start-session-button"));
+    await user.click(await screen.findByTestId("practice-mode-toggle"));
+
+    const editor = await screen.findByTestId("coding-draft-input");
+    fireEvent.change(editor, { target: { value: "def two_sum(nums, target): return [0, 1]" } });
+    await user.click(screen.getByTestId("review-code-button"));
+
+    expect(await screen.findByText(/Финальное сообщение модели:/)).toBeInTheDocument();
+    expect(screen.getByText(/Оценка:/)).toBeInTheDocument();
+    expect(screen.queryByText(/Шаблонный комментарий score_task/)).not.toBeInTheDocument();
   });
 });

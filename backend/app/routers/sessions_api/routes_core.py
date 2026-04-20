@@ -23,12 +23,14 @@ def create_session(payload: schemas.SessionCreate, db: Session = Depends(get_db)
         raise HTTPException(status_code=400, detail="Scenario or role not found")
     if scenario.role_id != role.id:
         raise HTTPException(status_code=400, detail="Scenario does not belong to the selected role")
+    tasks = scenario.tasks or []
+    first_task_id = tasks[0].get("id") if tasks else None
     session = models.Session(
         scenario_id=payload.scenario_id,
         role_id=payload.role_id,
         candidate_id=payload.candidate_id,
         state="active",
-        current_task_id=None,
+        current_task_id=first_task_id,
     )
     db.add(session)
     db.commit()

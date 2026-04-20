@@ -959,9 +959,9 @@ const goNextTask = () => {
           </p>
           <div className="hero-actions">
             {view !== "admin" && (
-              <button className="primary" disabled={loading} onClick={startSession}>
-                {sessionId ? "Начать" : "Создать сессию и начать"}
-              </button>
+            <button data-testid="start-session-button" className="primary" disabled={loading} onClick={startSession}>
+              {sessionId ? "Начать" : "Создать сессию и начать"}
+            </button>
             )}
             <button
               className="ghost"
@@ -1065,6 +1065,7 @@ const goNextTask = () => {
               Теория
             </button>
             <button
+              data-testid="practice-mode-toggle"
               className={sessionMode === "practice" ? "primary" : "ghost"}
               onClick={() => {
                 setSessionMode("practice");
@@ -1188,6 +1189,7 @@ const goNextTask = () => {
                     </div>
                     <div style={{ display: "flex", gap: 8 }}>
                       <button
+                        data-testid="review-code-button"
                         className="primary"
                         onClick={() => reviewCodeWithModel(currentTask)}
                         disabled={!sessionId || isRunningTests || isScoring || currentTaskLocked}
@@ -1198,6 +1200,7 @@ const goNextTask = () => {
                   </div>
 
                   <textarea
+                    data-testid="coding-draft-input"
                     value={currentDraft}
                     onChange={(e) => {
                       if (!currentTask || currentTask.type !== "coding") return;
@@ -1290,15 +1293,20 @@ const goNextTask = () => {
                     <div className="log">
                       <p className="label">Комментарий модели</p>
 
-                      {currentScoreResult ? (
+                      {currentAgentFeedback ? (
                         <>
-                          <p><strong>Оценка:</strong> {currentScoreResult.points}/{currentTask?.max_points ?? 10}</p>
-                          {currentScoreResult.comment && (
-                            <ReactMarkdown>{formatCodeScoreComment(currentScoreResult.comment)}</ReactMarkdown>
+                          {currentScoreResult && (
+                            <p><strong>Оценка:</strong> {currentScoreResult.points}/{currentTask?.max_points ?? 10}</p>
                           )}
+                          <ReactMarkdown>{currentAgentFeedback}</ReactMarkdown>
                         </>
                       ) : (
-                        <ReactMarkdown>{currentAgentFeedback || ""}</ReactMarkdown>
+                        <>
+                          {currentScoreResult && (
+                            <p><strong>Оценка:</strong> {currentScoreResult.points}/{currentTask?.max_points ?? 10}</p>
+                          )}
+                          <ReactMarkdown>{formatCodeScoreComment(currentScoreResult?.comment || "")}</ReactMarkdown>
+                        </>
                       )}
                     </div>
                   )}

@@ -17,7 +17,7 @@ from .practice import _score_feedback
 from .prompting import (
     _analyze_candidate_message,
     _build_system_prompt,
-    _ensure_first_model_greeting,
+    _ensure_first_model_opening,
     _extract_inline_tool_call,
     _normalize_lm_messages,
     _strip_intro,
@@ -33,7 +33,7 @@ from .tool_call_utils import (
 )
 from .tools import theory_tools, coding_tools, sql_tools, rag_search_only_tools
 from .theory_retry import (build_theory_comment_retry_message, build_final_theory_comment_retry_message, force_final_theory_score, force_pending_theory_intermediate_score, has_unscored_answer_for_current_theory_question, is_retryable_final_theory_score_error, is_retryable_theory_score_error, resolve_current_task_id, score_task_only_tools,)
-from .theory_contracts import (build_theory_final_message_contract, build_theory_final_message_prompt, build_theory_final_message_repair_prompt, sanitize_theory_final_message, theory_final_message_has_wrong_score, theory_final_message_too_generic,)
+from .theory_contracts import (build_theory_final_message_contract, build_theory_final_message_prompt, build_theory_final_message_repair_prompt, finalize_theory_final_message, sanitize_theory_final_message, theory_final_message_has_wrong_score, theory_final_message_too_generic,)
 
 def _sanitize_streamed_text(
     text: str,
@@ -392,8 +392,9 @@ def stream_model(session_id: str):
             "role": "system",
             "content": (
                 "Это первый ответ модели в сессии. "
-                "Сначала кратко поприветствуй кандидата, "
-                "затем сразу задай первый вопрос первого задания."
+                "Нужно дать одно короткое приветствие, "
+                "затем сразу задать первый вопрос первого задания. "
+                "Не пересказывай весь сценарий интервью."
             ),
         })
 
@@ -951,6 +952,7 @@ def stream_model(session_id: str):
                 if not _looks_like_tool_dump(repair_text):
                     final_assistant_msg = repair_msg
                     final_text = repair_text
+            final_text = finalize_theory_final_message(final_text, theory_contract)
         final_assistant_msg["content"] = final_text
         break
 
@@ -1002,7 +1004,7 @@ def stream_model(session_id: str):
                 if task_obj_local and task_obj_local.get("type") == "theory" and _as_bool(score_result_payload.get("is_final"), default=False):
                     theory_contract_local = build_theory_final_message_contract(task_obj_local, score_result_payload)
                     if theory_contract_local:
-                        final_text = sanitize_theory_final_message(final_text, theory_contract_local)
+                        final_text = finalize_theory_final_message(final_text, theory_contract_local)
 
             if not final_text and isinstance(score_result_payload, dict):
                 if score_result_payload.get("ok") is True and _as_bool(score_result_payload.get("is_final"), default=False):
@@ -1017,7 +1019,7 @@ def stream_model(session_id: str):
             if final_text:
                 final_text = final_text.strip()
                 if not control_state.get("intro_done", False):
-                    final_text = _ensure_first_model_greeting(final_text, local_session)
+                    final_text = _ensure_first_model_opening(final_text, local_session)
                 trimmed = _strip_intro(final_text, control_state.get("intro_done", False)).strip()
                 if trimmed:
                     local_db.add(models.Message(
