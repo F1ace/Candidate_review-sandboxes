@@ -28,6 +28,19 @@ _THEORY_LEAK_MARKERS: tuple[str, ...] = (
     "оценка из points",
 )
 
+_LEADING_SCORE_LINE_RE = re.compile(
+    r"^\s*(?:\*\*)?(?:оценка|балл)(?:\*\*)?\s*:\s*(?:не выставлена.*|\d+(?:[.,]\d+)?\s*/\s*\d+)\s*$",
+    re.IGNORECASE,
+)
+_LEADING_POINTS_LINE_RE = re.compile(
+    r"^\s*points?\s*:\s*\d+(?:[.,]\d+)?(?:\s*/\s*\d+)?\s*$",
+    re.IGNORECASE,
+)
+_LEADING_COMMENT_LABEL_RE = re.compile(
+    r"^\s*(?:comment|комментарий)\s*:\s*(.*)\s*$",
+    re.IGNORECASE,
+)
+
 
 def _extract_candidate_code(instruction: str) -> str:
     markers = ("КОД КАНДИДАТА:", "CODE:")
@@ -112,7 +125,7 @@ def _extract_points_from_plain_feedback(content: str) -> float | None:
     if not text:
         return None
 
-    match = re.search(r"(?i)(?:оценка|балл)\s*[:\-]?\s*(\d+(?:[.,]\d+)?)\s*/\s*10", text)
+    match = re.search(r"(?i)(?:оценка|балл)\s*[:\-]?\s*(\d+(?:[.,]\d+)?)\s*/\s*\d+", text)
     if not match:
         return None
 
@@ -251,7 +264,12 @@ def _practice_reply_needs_fallback(content: str) -> bool:
         or "Вопрос 1/" in stripped
         or "Сегодня мы" in stripped
         or stripped.startswith("Проверка завершена. Passrate:")
-        or (_count_practice_headers(stripped) == 0 and len(stripped) < 180)
+        or (
+            _count_practice_headers(stripped) == 0
+            and len(stripped) < 90
+            and stripped.count(".") < 2
+            and stripped.count("\n") < 2
+        )
     )
 
 
@@ -263,7 +281,8 @@ def _practice_final_reply_prompt(
     score = state.artifacts.get("score_result") or {}
     points = score.get("points")
     comment = (score.get("comment") or "").strip()
-    score_line = f"Принятая оценка: {points}/10.\n" if points is not None else ""
+    max_points = int(round(state.max_points or 0)) or 10
+    score_line = f"Принятая оценка: {points}/{max_points}.\n" if points is not None else ""
     comment_line = f"Принятый комментарий score_task:\n{comment}\n\n" if comment else ""
 
     base_prompt = (
@@ -272,6 +291,8 @@ def _practice_final_reply_prompt(
         "Не вызывай инструменты. "
         "Не пиши JSON, tool-dump, schema или служебные поля. "
         "Ответ оформи содержательно и не сокращай до одной строки. "
+        "Используй принятый score_task.comment как источник фактов, но не копируй его дословно: "
+        "перепиши своими словами как живой финальный отзыв кандидату. "
         "Используй те же 4 смысловых блока, что и в принятом score_task.comment:\n"
         "Корректность:\n"
         "Качество кода:\n"
@@ -293,7 +314,7 @@ def _practice_final_reply_prompt(
         + "СТОП. В прошлый раз ответ не подошёл. "
         "Сейчас нужен только финальный комментарий кандидату по уже принятому score_task. "
         "Не повторяй статус пайплайна, не упоминай инструменты и не печатай технические причины ошибок. "
-        "Обязательно сохрани 4 содержательных блока: Корректность, Качество кода, "
+        "Обязательно перепиши отзыв своими словами и сохрани 4 содержательных блока: Корректность, Качество кода, "
         "Сложность и эффективность, Что можно улучшить."
     )
 
@@ -379,41 +400,90 @@ def _request_model_score_comment(
 
     return None
 
+def _normalize_model_practice_reply(content: str) -> str:
+    lines = str(content or "").splitlines()
+    while lines:
+        first = lines[0].strip()
+        if not first:
+            lines.pop(0)
+            continue
+
+        if _LEADING_SCORE_LINE_RE.match(first) or _LEADING_POINTS_LINE_RE.match(first):
+            lines.pop(0)
+            continue
+
+        comment_match = _LEADING_COMMENT_LABEL_RE.match(first)
+        if comment_match:
+            tail = comment_match.group(1).strip()
+            if tail:
+                lines[0] = tail
+            else:
+                lines.pop(0)
+            continue
+
+        break
+
+    return "\n".join(lines).strip()
+
+def _practice_display_points(state: CodeWorkflowState) -> tuple[int | None, int]:
+    max_points = int(round(state.max_points or 0)) or 10
+    score = state.artifacts.get("score_result") or {}
+    raw_points = score.get("points")
+
+    try:
+        if raw_points is not None:
+            return int(round(float(raw_points))), max_points
+    except Exception:
+        pass
+
+    report = state.artifacts.get("run_report") or {}
+    if report:
+        passrate = float(report.get("passrate") or 0.0)
+        return int(round(max_points * passrate)), max_points
+
+    return None, max_points
+
 def _practice_fallback_feedback(state: CodeWorkflowState) -> str:
     report = state.artifacts.get("run_report") or {}
     score = state.artifacts.get("score_result") or {}
 
     tests_total = int(report.get("tests_total") or 0)
     tests_passed = int(report.get("tests_passed") or 0)
-    points = score.get("points", 0)
-    comment = (score.get("comment") or "").strip()
-
-    parts = [
-        f"Практическая проверка завершена.",
-        f"",
-        f"**Балл:** {points}",
-        f"**Тесты:** пройдено {tests_passed} из {tests_total}.",
-    ]
-
-    if comment:
-        parts.extend(["", comment])
-
-    return "\n".join(parts)
-
-def _practice_reply_from_score(state: CodeWorkflowState) -> str:
-    score = state.artifacts.get("score_result") or {}
-    points = score.get("points")
+    points, max_points = _practice_display_points(state)
     comment = (score.get("comment") or "").strip()
 
     parts = ["Практическая проверка завершена."]
 
     if points is not None:
-        parts.append(f"\nБалл: {points}/10")
+        parts.extend(["", f"Балл: {points}/{max_points}"])
+
+    if tests_total:
+        parts.extend(["", f"Тесты: пройдено {tests_passed} из {tests_total}."])
 
     if comment:
-        parts.append(f"\n{comment}")
+        parts.extend(["", comment])
 
-    return "\n".join(parts)
+    return "\n".join(parts).strip()
+
+def _practice_reply_from_score(state: CodeWorkflowState) -> str:
+    score = state.artifacts.get("score_result") or {}
+    points, max_points = _practice_display_points(state)
+    comment = (score.get("comment") or "").strip()
+    report = state.artifacts.get("run_report") or {}
+    tests_total = int(report.get("tests_total") or 0)
+    tests_passed = int(report.get("tests_passed") or 0)
+
+    parts = ["Практическая проверка завершена."]
+
+    if points is not None:
+        parts.extend(["", f"Балл: {points}/{max_points}"])
+
+    if comment:
+        parts.extend(["", comment])
+    elif tests_total:
+        parts.extend(["", f"Тесты: пройдено {tests_passed} из {tests_total}."])
+
+    return "\n".join(parts).strip()
 
 
 def _practice_recovery_reply(state: CodeWorkflowState) -> str:
@@ -566,8 +636,8 @@ def run_practice_code_review(
                 "- не вставляй шаблонные фразы, квадратные скобки и текст-заглушки;\n"
                 "- каждый раздел комментария должен быть заполнен осмысленным текстом.\n"
                 "Финальный ответ должен быть обычным текстом для кандидата.\n"
+                "Отдельной строкой балл в финальном ответе не дублируй: он уже показывается в UI.\n"
                 "Финальный ответ обязан содержать:\n"
-                "- итоговый балл,\n"
                 "- краткий вывод по корректности решения,\n"
                 "- комментарий по качеству кода,\n"
                 "- при необходимости замечание по сложности/эффективности,\n"
@@ -1076,14 +1146,14 @@ def run_practice_code_review(
         content = _practice_recovery_reply(state)
         db.add(models.Message(session_id=session.id, sender="model", text=content, task_id=task_id))
         db.commit()
-        return {"reply": content, "tool_results": tool_results_for_ui}
+        return {
+            "reply": content,
+            "tool_results": tool_results_for_ui,
+            "reply_source": "fallback",
+        }
 
-    content = ((final_msg or {}).get("content") or "").strip()
+    content = _normalize_model_practice_reply(((final_msg or {}).get("content") or "").strip())
     score_result = state.artifacts.get("score_result") or {}
-
-    if _practice_reply_needs_fallback(content) and score_result.get("comment"):
-        content = _practice_reply_from_score(state)
-        backend_generated_reply = True
 
     if _practice_reply_needs_fallback(content):
         content = _practice_recovery_reply(state)
@@ -1092,4 +1162,8 @@ def run_practice_code_review(
     db.add(models.Message(session_id=session.id, sender="model", text=content, task_id=task_id))
     db.commit()
 
-    return {"reply": content, "tool_results": tool_results_for_ui}
+    return {
+        "reply": content,
+        "tool_results": tool_results_for_ui,
+        "reply_source": "fallback" if backend_generated_reply else "model",
+    }

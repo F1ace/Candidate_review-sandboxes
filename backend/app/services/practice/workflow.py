@@ -509,13 +509,14 @@ class CodeWorkflowState:
             payload["is_final"] = True
 
             model_comment = (payload.get("comment") or "").strip()
-            payload["comment"] = normalize_practice_comment(
+            normalized_comment = normalize_practice_comment(
                 model_comment,
                 tests_passed=tests_passed,
                 tests_total=tests_total,
                 points=points,
                 max_points=max_points,
             )
+            payload["comment"] = normalized_comment
             payload["run_code_result"] = report
             return payload, None
 
@@ -612,21 +613,6 @@ class SqlWorkflowState:
                 points=points,
                 max_points=max_points,
             )
-            if not _practice_comment_is_valid(
-                normalized_comment,
-                [
-                    "Корректность:",
-                    "Качество решения:",
-                    "Работа с SQL:",
-                    "Что можно улучшить:",
-                ],
-            ):
-                normalized_comment = build_sql_practice_comment_from_report(
-                    report=report,
-                    points=points,
-                    max_points=max_points,
-                )
-
             payload["comment"] = normalized_comment
             payload["run_sql_result"] = report
             return payload, None

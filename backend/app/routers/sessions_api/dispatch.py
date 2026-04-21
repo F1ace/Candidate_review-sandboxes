@@ -71,6 +71,43 @@ def _normalize_theory_tool_score_args(
     payload["points"] = normalized_points
     return payload
 
+
+def _hydrate_internal_final_theory_comments(
+    session: models.Session,
+    db: Session,
+    args: dict[str, Any] | None,
+    task: dict[str, Any] | None,
+) -> dict[str, Any]:
+    payload = dict(args or {})
+    if not payload:
+        return payload
+
+    if not isinstance(task, dict) or task.get("type") != "theory":
+        return payload
+
+    if not _resolve_score_task_is_final(
+        payload,
+        task_type=task.get("type"),
+        question_index=payload.get("question_index"),
+    ):
+        return payload
+
+    existing_comments = _normalize_theory_final_comments(payload.get("comments"))
+    if _validate_final_theory_comments(task, existing_comments) is None:
+        return payload
+
+    task_id = (payload.get("task_id") or "").strip()
+    if not task_id:
+        return payload
+
+    aggregated = _aggregate_theory_intermediate_scores(session, db, task_id)
+    fallback_comments = aggregated.get("comments") or []
+
+    if _validate_final_theory_comments(task, fallback_comments) is None:
+        payload["comments"] = fallback_comments
+
+    return payload
+
 def _build_tests_payload(task: models.Task) -> list[dict[str, Any]]:
     extra = task.extra_config or {}
 
@@ -197,6 +234,7 @@ def _dispatch_tool_call(session: models.Session, tc: dict[str, Any], db: Session
             task_id = args.get("task_id")
             task = _get_task_by_id(session.scenario, task_id) if task_id else None
             args = _normalize_theory_tool_score_args(args, task)
+            args = _hydrate_internal_final_theory_comments(session, db, args, task)
             return _apply_score(session, args, db)
 
         if name == "web_search":

@@ -222,6 +222,7 @@ const createPracticeFeedbackFetchMock = () =>
       return jsonResponse({
         reply:
           "Финальное сообщение модели: решение получилось рабочим, все тесты пройдены, а следующим шагом стоит добавить ещё пару собственных проверок на крайние случаи.",
+        reply_source: "model",
         tool_results: [
           {
             name: "run_code",
@@ -252,7 +253,210 @@ const createPracticeFeedbackFetchMock = () =>
               task_id: "C1",
               points: 10,
               comment:
-                "Корректность: Шаблонный комментарий score_task.\nКачество кода: Шаблонный комментарий score_task.\nСложность и эффективность: Шаблонный комментарий score_task.\nЧто можно улучшить: Шаблонный комментарий score_task.",
+                "Корректность: Решение прошло все проверки песочницы и на текущем наборе кейсов работает корректно.\nКачество кода: Код читается легко и не перегружен лишними конструкциями.\nСложность и эффективность: Для этой задачи выбранный подход выглядит достаточно эффективным.\nЧто можно улучшить: Добавить ещё пару собственных тестов на крайние случаи.",
+              is_final: true,
+            },
+          },
+        ],
+      });
+    }
+
+    return new Response(`Unhandled ${method} ${path}`, { status: 500 });
+  });
+
+const createPracticeRetryScoreFetchMock = () =>
+  vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = toPath(input);
+    const method = (init?.method ?? "GET").toUpperCase();
+
+    if (method === "GET" && path === "/roles") {
+      return jsonResponse([{ id: 1, name: "Code Role", slug: "code-role", description: "Practice role" }]);
+    }
+    if (method === "GET" && path === "/scenarios") {
+      return jsonResponse([
+        {
+          id: 21,
+          role_id: 1,
+          name: "Code Scenario",
+          slug: "code-scenario",
+          description: "Checks coding output",
+          difficulty: "middle",
+          rag_corpus_id: null,
+          tasks: [
+            {
+              id: "C1",
+              type: "coding",
+              title: "Two sum",
+              language: "python",
+              description_for_candidate: "Implement two_sum",
+              max_points: 10,
+            },
+          ],
+        },
+      ]);
+    }
+    if (method === "GET" && path === "/sql-scenarios") {
+      return jsonResponse([]);
+    }
+    if (method === "GET" && path === "/rag/corpora") {
+      return jsonResponse([]);
+    }
+    if (method === "POST" && path === "/sessions") {
+      return jsonResponse({ id: "sess-1" }, 201);
+    }
+    if (method === "GET" && path === "/sessions/sess-1") {
+      return jsonResponse({ scores: {} });
+    }
+    if (method === "GET" && path === "/sessions/sess-1/lm/chat-stream") {
+      return new Response(
+        `data: ${JSON.stringify({ type: "done", content: "Здравствуйте! **Практическое задание:** Two sum" })}\n\n`,
+        {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        },
+      );
+    }
+    if (method === "POST" && path === "/sessions/sess-1/practice/code") {
+      return jsonResponse({
+        reply:
+          "Финальное сообщение модели: решение частично работает, а следующим шагом стоит дописать обработку проблемных кейсов.",
+        reply_source: "model",
+        tool_results: [
+          {
+            name: "run_code",
+            result: {
+              ok: true,
+              task_id: "C1",
+              result: {
+                success: false,
+                stdout: "",
+                stderr: "",
+                exit_code: 1,
+                details: null,
+                tests_total: 4,
+                tests_passed: 2,
+                test_results: [
+                  { name: "basic", passed: true },
+                  { name: "subset", passed: true },
+                  { name: "negative", passed: false },
+                  { name: "edge", passed: false },
+                ],
+              },
+            },
+          },
+          {
+            name: "score_task",
+            result: {
+              ok: false,
+              task_id: "C1",
+              error: "comment is required and must be non-empty",
+            },
+          },
+          {
+            name: "score_task",
+            result: {
+              ok: true,
+              task_id: "C1",
+              points: 6,
+              comment:
+                "Корректность: Решение проходит только часть тестов.\nКачество кода: Код можно сделать устойчивее.\nСложность и эффективность: Сейчас важнее исправить корректность.\nЧто можно улучшить: Дописать обработку крайних случаев.",
+              is_final: true,
+            },
+          },
+        ],
+      });
+    }
+
+    return new Response(`Unhandled ${method} ${path}`, { status: 500 });
+  });
+
+const createSqlPracticeFeedbackFetchMock = () =>
+  vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = toPath(input);
+    const method = (init?.method ?? "GET").toUpperCase();
+
+    if (method === "GET" && path === "/roles") {
+      return jsonResponse([{ id: 2, name: "SQL Role", slug: "sql-role", description: "SQL practice role" }]);
+    }
+    if (method === "GET" && path === "/scenarios") {
+      return jsonResponse([
+        {
+          id: 31,
+          role_id: 2,
+          name: "SQL Scenario",
+          slug: "sql-scenario",
+          description: "Checks SQL output",
+          difficulty: "middle",
+          rag_corpus_id: null,
+          tasks: [
+            {
+              id: "SQL1",
+              type: "sql",
+              title: "Orders by city",
+              description_for_candidate: "Посчитайте оплаченные отгрузки по городам.",
+              max_points: 10,
+              sql_scenario_id: "orders_city",
+            },
+          ],
+        },
+      ]);
+    }
+    if (method === "GET" && path === "/sql-scenarios") {
+      return jsonResponse([
+        {
+          id: 1,
+          name: "orders_city",
+          description: "Orders schema",
+          db_schema: "orders(city text, status text)",
+        },
+      ]);
+    }
+    if (method === "GET" && path === "/rag/corpora") {
+      return jsonResponse([]);
+    }
+    if (method === "POST" && path === "/sessions") {
+      return jsonResponse({ id: "sess-1" }, 201);
+    }
+    if (method === "GET" && path === "/sessions/sess-1") {
+      return jsonResponse({ scores: {} });
+    }
+    if (method === "GET" && path === "/sessions/sess-1/lm/chat-stream") {
+      return new Response(
+        `data: ${JSON.stringify({ type: "done", content: "Здравствуйте! **Практическое задание:** Orders by city" })}\n\n`,
+        {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        },
+      );
+    }
+    if (method === "POST" && path === "/sessions/sess-1/practice/sql") {
+      return jsonResponse({
+        reply:
+          "Points: 5\n\nComment:\nКорректность: Результат содержит неверный коэффициент конверсии из-за целочисленного деления.\n\nКачество решения: Запрос читаемый, но форматирование можно сделать аккуратнее.\n\nРабота с SQL: Использованы LEFT JOIN и GROUP BY, но COUNT без DISTINCT приводит к двойному счёту.\n\nЧто можно улучшить: Добавить COUNT(DISTINCT e.user_id) и привести результат к дроби.",
+        reply_source: "model",
+        tool_results: [
+          {
+            tool: "run_sql",
+            result: {
+              ok: true,
+              task_id: "SQL1",
+              sql_scenario_id: "orders_city",
+              result: {
+                success: true,
+                columns: ["city", "shipped_paid_orders"],
+                rows: [["Moscow", 3]],
+                error: null,
+              },
+            },
+          },
+          {
+            tool: "score_task",
+            result: {
+              ok: true,
+              task_id: "SQL1",
+              points: 5,
+              comment:
+                "Корректность: Результат содержит неверный коэффициент конверсии из-за целочисленного деления.\nКачество решения: Запрос читаемый, но форматирование можно сделать аккуратнее.\nРабота с SQL: Использованы LEFT JOIN и GROUP BY, но COUNT без DISTINCT приводит к двойному счёту.\nЧто можно улучшить: Добавить COUNT(DISTINCT e.user_id) и привести результат к дроби.",
               is_final: true,
             },
           },
@@ -269,7 +473,7 @@ describe("Practice feedback UI", () => {
     vi.unstubAllGlobals();
   });
 
-  it("shows model reply for coding review instead of raw score_task comment when both are available", async () => {
+  it("prefers model final reply for coding review and keeps score_task comment as fallback only", async () => {
     const user = userEvent.setup();
     const fetchMock = createPracticeFeedbackFetchMock();
     vi.stubGlobal("fetch", fetchMock);
@@ -287,6 +491,52 @@ describe("Practice feedback UI", () => {
 
     expect(await screen.findByText(/Финальное сообщение модели:/)).toBeInTheDocument();
     expect(screen.getByText(/Оценка:/)).toBeInTheDocument();
-    expect(screen.queryByText(/Шаблонный комментарий score_task/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Решение прошло все проверки песочницы/)).not.toBeInTheDocument();
+    expect(screen.getAllByText(/Оценка:/)).toHaveLength(1);
+  });
+
+  it("uses the last successful score_task result so the score stays visible after retries", async () => {
+    const user = userEvent.setup();
+    const fetchMock = createPracticeRetryScoreFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+
+    await user.click(await screen.findByText("Code Role"));
+    await user.click(await screen.findByText("Checks coding output"));
+    await user.click(screen.getByTestId("start-session-button"));
+    await user.click(await screen.findByTestId("practice-mode-toggle"));
+
+    const editor = await screen.findByTestId("coding-draft-input");
+    fireEvent.change(editor, { target: { value: "def two_sum(nums, target): return []" } });
+    await user.click(screen.getByTestId("review-code-button"));
+
+    expect(await screen.findByText(/Оценка:/)).toBeInTheDocument();
+    expect(screen.getByText(/6\/10/)).toBeInTheDocument();
+    expect(screen.getAllByText(/Оценка:/)).toHaveLength(1);
+  });
+
+  it("strips duplicated Points and Comment wrappers from sql model reply in the UI", async () => {
+    const user = userEvent.setup();
+    const fetchMock = createSqlPracticeFeedbackFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+
+    await user.click(await screen.findByText("SQL Role"));
+    await user.click(await screen.findByText("Checks SQL output"));
+    await user.click(screen.getByTestId("start-session-button"));
+    await user.click(await screen.findByTestId("practice-mode-toggle"));
+
+    const editor = await screen.findByTestId("sql-draft-input");
+    fireEvent.change(editor, { target: { value: "select city, count(*) from orders group by city" } });
+    await user.click(screen.getByTestId("review-sql-button"));
+
+    expect(await screen.findByText(/Оценка:/)).toBeInTheDocument();
+    expect(screen.getByText(/5\/10/)).toBeInTheDocument();
+    expect(screen.getAllByText(/Оценка:/)).toHaveLength(1);
+    expect(screen.queryByText(/^Points:/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Comment:/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/Корректность:/)).toBeInTheDocument();
   });
 });

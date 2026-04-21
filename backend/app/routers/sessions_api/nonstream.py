@@ -816,12 +816,23 @@ def call_model(session_id: str, db: Session):
                         args,
                         tool_call_id="inline_toolcall_retry",
                     )
-            if current_task_id and pending_question_index:
-                final_msg, tool_calls = force_pending_theory_intermediate_score(
-                    final_msg,
-                    task_id=current_task_id,
-                    question_index=pending_question_index,
+            if score_task_obj and score_task_obj.get("type") == "theory":
+                retry_is_final_theory_score = _resolve_score_task_is_final(
+                    args_sc,
+                    task_type=score_task_obj.get("type"),
+                    question_index=args_sc.get("question_index"),
                 )
+                if retry_is_final_theory_score and task_id_for_db:
+                    final_msg, tool_calls = force_final_theory_score(
+                        final_msg,
+                        task_id=task_id_for_db,
+                    )
+                elif current_task_id and pending_question_index:
+                    final_msg, tool_calls = force_pending_theory_intermediate_score(
+                        final_msg,
+                        task_id=current_task_id,
+                        question_index=pending_question_index,
+                    )
 
             messages.append(final_msg)
             continue

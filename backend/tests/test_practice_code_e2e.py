@@ -53,6 +53,94 @@ def _create_code_session(db_session, *, slug: str, max_points: int = 10) -> mode
     return session
 
 
+def _create_code_session_after_rag_theory(
+    db_session,
+    *,
+    slug: str,
+    max_points: int = 10,
+) -> models.Session:
+    role = models.Role(name=f"Role {slug}", slug=f"{slug}-role", description="coding role with rag theory")
+    db_session.add(role)
+
+    corpus = models.RagCorpus(name=f"Corpus {slug}", description="theory corpus")
+    db_session.add(corpus)
+    db_session.flush()
+
+    db_session.add(
+        models.Document(
+            rag_corpus_id=corpus.id,
+            filename="theory.txt",
+            content="RAG theory material",
+            status="ready",
+        )
+    )
+
+    scenario = models.Scenario(
+        role_id=role.id,
+        name=f"Scenario {slug}",
+        slug=f"scenario-{slug}",
+        description="scenario with theory and coding task",
+        difficulty="middle",
+        rag_corpus_id=corpus.id,
+        tasks=[
+            {
+                "id": "T1",
+                "type": "theory",
+                "title": "Theory block",
+                "max_points": 10,
+                "questions": [{"text": "What is RAG?"}],
+            },
+            {
+                "id": "C1",
+                "type": "coding",
+                "title": "Two sum",
+                "language": "python",
+                "description_for_candidate": "Implement two_sum.",
+                "max_points": max_points,
+            },
+        ],
+        config={},
+    )
+    db_session.add(scenario)
+    db_session.commit()
+    db_session.refresh(scenario)
+
+    session = models.Session(
+        scenario_id=scenario.id,
+        role_id=role.id,
+        state="active",
+        current_task_id="C1",
+        scores={"T1": 8},
+    )
+    db_session.add(session)
+    db_session.commit()
+    db_session.refresh(session)
+
+    db_session.add_all(
+        [
+            models.Message(
+                session_id=session.id,
+                sender="tool",
+                text="rag_search -> {'ok': True, 'results': [{'snippet': 'RAG evidence'}]}",
+                task_id="T1",
+            ),
+            models.Message(
+                session_id=session.id,
+                sender="model",
+                text=(
+                    "Теоретический блок завершён. "
+                    "Сильные стороны: хорошее понимание терминов. "
+                    "Зоны роста: добавить больше деталей."
+                ),
+                task_id="T1",
+            ),
+        ]
+    )
+    db_session.commit()
+    db_session.refresh(session)
+    return session
+
+
 def _run_code_result(*, success: bool, tests_passed: int, tests_total: int = 4) -> dict:
     test_results = [
         {"name": "basic", "passed": True, "error": None},
@@ -119,13 +207,14 @@ def _run_code_tool_call(code: str = "def two_sum(nums, target): return [0, 1]") 
     }
 
 
-def test_practice_code_retries_invalid_score_comment_and_finishes(
+def test_practice_code_retries_invalid_score_comment_and_keeps_model_generated_result(
     client,
     db_session,
     monkeypatch,
 ):
     session = _create_code_session(db_session, slug="be-practice-code")
     state = {"step": 0}
+    accepted_comments: list[str] = []
 
     def fake_chat(messages, tools=None, tool_choice=None):
         step = state["step"]
@@ -148,7 +237,13 @@ def test_practice_code_retries_invalid_score_comment_and_finishes(
 
         if step == 2:
             assert tool_names == {"score_task"}
-            return {"choices": [{"message": {"role": "assistant", "content": "", "tool_calls": [_score_tool_call(points=2.0, comment=VALID_SCORE_COMMENT, tool_id="score_task_retry_call")]}}]}
+            valid_comment = (
+                "Корректность: Решение пока проходит только часть проверок, поэтому основную логику ещё нужно доработать.\n"
+                "Качество кода: Код короткий, но в текущем виде он не покрывает проблемные сценарии и выглядит незавершённым.\n"
+                "Сложность и эффективность: Сейчас важнее исправить корректность алгоритма, а обсуждение асимптотики вторично.\n"
+                "Что можно улучшить: Исправить поиск пары, добавить локальные тесты на дубликаты и отдельно проверить отрицательные значения."
+            )
+            return {"choices": [{"message": {"role": "assistant", "content": "", "tool_calls": [_score_tool_call(points=2.0, comment=valid_comment, tool_id="score_task_retry_call")]}}]}
 
         assert tool_names == set()
         return {
@@ -183,6 +278,7 @@ def test_practice_code_retries_invalid_score_comment_and_finishes(
                 "task_id": "C1",
                 "error": "Practice comment contains placeholders or template instructions instead of final feedback.",
             }
+        accepted_comments.append(comment)
         return {
             "ok": True,
             "task_id": "C1",
@@ -204,8 +300,16 @@ def test_practice_code_retries_invalid_score_comment_and_finishes(
     assert payload["tool_results"][0]["name"] == "run_code"
     assert payload["tool_results"][1]["name"] == "score_task"
     assert payload["tool_results"][1]["result"]["ok"] is False
-    assert payload["tool_results"][2]["name"] == "score_task"
-    assert payload["tool_results"][2]["result"]["ok"] is True
+    assert payload["tool_results"][-1]["name"] == "score_task"
+    assert payload["tool_results"][-1]["result"]["ok"] is True
+    assert len(accepted_comments) == 1
+    assert "[" not in accepted_comments[0]
+    assert "]" not in accepted_comments[0]
+    assert "Корректность:" in accepted_comments[0]
+    assert "Качество кода:" in accepted_comments[0]
+    assert "Сложность и эффективность:" in accepted_comments[0]
+    assert "Что можно улучшить:" in accepted_comments[0]
+    assert payload["reply_source"] == "model"
     assert "model did not complete required score_task step" not in payload["reply"]
     assert "Практическая проверка завершена." in payload["reply"]
 
@@ -278,6 +382,7 @@ def test_practice_code_recovers_after_missing_score_task_without_leaking_auto_er
     payload = response.json()
     assert payload["tool_results"][0]["name"] == "run_code"
     assert payload["tool_results"][-1]["name"] == "score_task"
+    assert payload["reply_source"] == "model"
     assert "model did not complete required score_task step" not in payload["reply"]
     assert "Проверка не завершена автоматически." not in payload["reply"]
 
@@ -432,6 +537,7 @@ def test_practice_code_converts_structured_plain_feedback_into_score_task_and_ke
     payload = response.json()
     assert payload["tool_results"][0]["name"] == "run_code"
     assert payload["tool_results"][-1]["name"] == "score_task"
+    assert payload["reply_source"] == "model"
     assert "Практическая проверка завершена." in payload["reply"]
     assert "Что можно улучшить:" in payload["reply"]
 
@@ -546,6 +652,7 @@ def test_practice_code_persists_model_score_comment_and_retries_theory_like_fina
     payload = response.json()
     assert payload["tool_results"][0]["name"] == "run_code"
     assert payload["tool_results"][-1]["name"] == "score_task"
+    assert payload["reply_source"] == "model"
     assert "Теоретический блок завершён" not in payload["reply"]
     assert "сильные стороны" not in payload["reply"].lower()
     assert "зоны роста" not in payload["reply"].lower()
@@ -615,7 +722,146 @@ def test_practice_code_returns_fallback_reply_when_final_model_call_crashes(
     payload = response.json()
     assert payload["tool_results"][0]["name"] == "run_code"
     assert payload["tool_results"][-1]["name"] == "score_task"
+    assert payload["reply_source"] == "fallback"
     assert "Практическая проверка завершена." in payload["reply"]
     assert "Корректность:" in payload["reply"]
     assert "Качество кода:" in payload["reply"]
+    assert "Что можно улучшить:" in payload["reply"]
+
+
+def test_practice_code_recovers_structured_reply_after_rag_theory_context_leaks_into_scoring(
+    client,
+    db_session,
+    monkeypatch,
+):
+    session = _create_code_session_after_rag_theory(
+        db_session,
+        slug="be-practice-rag-theory-leak",
+    )
+    state = {"step": 0}
+
+    def fake_chat(messages, tools=None, tool_choice=None):
+        step = state["step"]
+        state["step"] += 1
+        tool_names = {(tool.get("function") or {}).get("name") for tool in tools or []}
+
+        if step == 0:
+            assert tool_names == {"run_code"}
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [_run_code_tool_call()],
+                        }
+                    }
+                ]
+            }
+
+        if step == 1:
+            assert tool_names == {"score_task"}
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [
+                                _score_tool_call(
+                                    points=10.0,
+                                    comment=(
+                                        "Теоретический блок завершён, комментарии по каждому ответу, "
+                                        "сильные стороны и зоны роста."
+                                    ),
+                                )
+                            ],
+                        }
+                    }
+                ]
+            }
+
+        if step == 2:
+            assert tool_names == {"score_task"}
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [
+                                _score_tool_call(
+                                    points=10.0,
+                                    comment=VALID_SCORE_COMMENT,
+                                    tool_id="score_task_retry_after_theory_leak",
+                                )
+                            ],
+                        }
+                    }
+                ]
+            }
+
+        assert tool_names == set()
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": (
+                            "Теоретический блок завершён, комментарии по каждому ответу, "
+                            "сильные стороны, зоны роста и точная оценка из points."
+                        ),
+                    }
+                }
+            ]
+        }
+
+    def fake_dispatch_tool_call(session_obj, tc, db):
+        name = (tc.get("function") or {}).get("name")
+        args = json.loads(((tc.get("function") or {}).get("arguments") or "{}"))
+        if name == "run_code":
+            return _run_code_result(success=True, tests_passed=4)
+
+        comment = str(args.get("comment") or "")
+        if "Теоретический блок завершён" in comment:
+            return {
+                "ok": False,
+                "task_id": "C1",
+                "error": "Practice comment does not match required template. Missing sections: Корректность:, Качество кода:, Сложность и эффективность:, Что можно улучшить:",
+            }
+
+        assert "Корректность:" in comment
+        assert "Качество кода:" in comment
+        assert "Сложность и эффективность:" in comment
+        assert "Что можно улучшить:" in comment
+        return {
+            "ok": True,
+            "task_id": "C1",
+            "points": float(args.get("points") or 0),
+            "comment": comment,
+            "is_final": True,
+        }
+
+    monkeypatch.setattr(practice_module.lm_client, "chat", fake_chat)
+    monkeypatch.setattr(practice_module, "_dispatch_tool_call", fake_dispatch_tool_call)
+
+    response = client.post(
+        f"/sessions/{session.id}/practice/code",
+        json={"task_id": "C1", "language": "python", "code": "def two_sum(nums, target): return [0, 1]"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["tool_results"][0]["name"] == "run_code"
+    assert payload["tool_results"][-1]["name"] == "score_task"
+    assert payload["tool_results"][-1]["result"]["ok"] is True
+    assert payload["reply_source"] == "fallback"
+    assert "Практическая проверка завершена." in payload["reply"]
+    assert "Балл: 10/10" in payload["reply"]
+    assert "Теоретический блок завершён" not in payload["reply"]
+    assert "сильные стороны" not in payload["reply"].lower()
+    assert "зоны роста" not in payload["reply"].lower()
+    assert "Корректность:" in payload["reply"]
+    assert "Качество кода:" in payload["reply"]
+    assert "Сложность и эффективность:" in payload["reply"]
     assert "Что можно улучшить:" in payload["reply"]

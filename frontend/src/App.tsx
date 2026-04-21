@@ -22,7 +22,7 @@ import type {
   SqlRunResult,
   SqlScenario,
 } from "./types/interview";
-import { formatCodeScoreComment, formatSqlScoreComment } from "./utils/scoreFormatting";
+import { formatCodeScoreComment, formatSqlScoreComment, normalizePracticeReply } from "./utils/scoreFormatting";
 import "./App.css";
 
 const defaultTasks: Task[] = [
@@ -72,6 +72,7 @@ type PracticeTaskState = {
   runResult: SandboxRunResult | SqlRunResult | null;
   scoreResult: ScoreResultPayload | null;
   agentFeedback: string | null;
+  replySource: "model" | "fallback" | null;
   executionLog: string | null;
   locked: boolean;
 };
@@ -101,8 +102,27 @@ const getInitialDraftForTask = (task: Task): string => {
 const getToolResults = (resp: PracticeAgentResponse): ToolResultItem[] =>
   Array.isArray(resp.tool_results) ? resp.tool_results : [];
 
-const findToolResult = (toolResults: ToolResultItem[], toolName: string): ToolResultItem | undefined =>
-  toolResults.find((item) => item?.name === toolName || item?.tool === toolName);
+const getReplySource = (resp: PracticeAgentResponse): "model" | "fallback" =>
+  resp.reply_source === "fallback" ? "fallback" : "model";
+
+const findLatestToolResult = (
+  toolResults: ToolResultItem[],
+  toolName: string,
+  options?: { preferSuccessful?: boolean },
+): ToolResultItem | undefined => {
+  const preferSuccessful = options?.preferSuccessful === true;
+  const matches = toolResults.filter((item) => item?.name === toolName || item?.tool === toolName);
+  if (!matches.length) return undefined;
+
+  if (preferSuccessful) {
+    const latestSuccessful = [...matches]
+      .reverse()
+      .find((item) => isRecord(item?.result) && item.result.ok === true);
+    if (latestSuccessful) return latestSuccessful;
+  }
+
+  return matches[matches.length - 1];
+};
 
 const getScoreResultPayload = (rawResult: unknown): ScoreResultPayload | null => {
   if (!isRecord(rawResult) || !rawResult.ok) return null;
@@ -232,14 +252,15 @@ function App() {
 
 const getPracticeTaskState = (task?: Task | null): PracticeTaskState => {
   if (!task) {
-    return {
-      draft: "",
-      runResult: null,
-      scoreResult: null,
-      agentFeedback: null,
-      executionLog: null,
-      locked: false,
-    };
+      return {
+        draft: "",
+        runResult: null,
+        scoreResult: null,
+        agentFeedback: null,
+        replySource: null,
+        executionLog: null,
+        locked: false,
+      };
   }
 
   return (
@@ -248,6 +269,7 @@ const getPracticeTaskState = (task?: Task | null): PracticeTaskState => {
       runResult: null,
       scoreResult: null,
       agentFeedback: null,
+      replySource: null,
       executionLog: null,
       locked: false,
     }
@@ -265,6 +287,7 @@ const updatePracticeTaskState = (
         runResult: null,
         scoreResult: null,
         agentFeedback: null,
+        replySource: null,
         executionLog: null,
         locked: false,
       };
@@ -285,6 +308,7 @@ const currentDraft = currentPracticeState.draft;
 const currentRunResult = currentPracticeState.runResult;
 const currentScoreResult = currentPracticeState.scoreResult;
 const currentAgentFeedback = currentPracticeState.agentFeedback;
+const currentReplySource = currentPracticeState.replySource;
 const currentExecutionLog = currentPracticeState.executionLog;
 const currentTaskLocked = currentPracticeState.locked;
 
@@ -393,6 +417,7 @@ const theoryCompleted = useMemo(() => {
           runResult: null,
           scoreResult: null,
           agentFeedback: null,
+          replySource: null,
           executionLog: null,
           locked: false,
         },
@@ -637,6 +662,7 @@ const theoryCompleted = useMemo(() => {
       ...prev,
       agentFeedback: null,
       scoreResult: null,
+      replySource: null,
       runResult: null,
       executionLog: null,
     }));
@@ -654,8 +680,8 @@ const theoryCompleted = useMemo(() => {
       });
 
       const toolResults = getToolResults(resp);
-      const runCodeTool = findToolResult(toolResults, "run_code");
-      const scoreTool = findToolResult(toolResults, "score_task");
+      const runCodeTool = findLatestToolResult(toolResults, "run_code");
+      const scoreTool = findLatestToolResult(toolResults, "score_task", { preferSuccessful: true });
       const runCodeToolResult = isRecord(runCodeTool?.result) ? runCodeTool.result : null;
       const nestedRunCodeResult = runCodeToolResult?.result;
       const scorePayload = getScoreResultPayload(scoreTool?.result);
@@ -680,13 +706,15 @@ const theoryCompleted = useMemo(() => {
         runResult: nextRunResult,
         executionLog: nextExecutionLog,
         scoreResult: scorePayload,
-        agentFeedback: resp.reply || "Нет ответа модели",
+        agentFeedback: normalizePracticeReply(resp.reply || "Нет ответа модели"),
+        replySource: getReplySource(resp),
         locked: true,
       }));
     } catch (err: unknown) {
       updatePracticeTaskState(task.id, (prev) => ({
         ...prev,
         agentFeedback: `Ошибка проверки: ${getErrorMessage(err)}`,
+        replySource: null,
       }));
     } finally {
       setIsRunningTests(false);
@@ -711,6 +739,7 @@ const theoryCompleted = useMemo(() => {
       ...prev,
       agentFeedback: null,
       scoreResult: null,
+      replySource: null,
       runResult: null,
       executionLog: null,
     }));
@@ -728,8 +757,8 @@ const theoryCompleted = useMemo(() => {
       });
 
       const toolResults = getToolResults(resp);
-      const runSqlTool = findToolResult(toolResults, "run_sql");
-      const scoreTool = findToolResult(toolResults, "score_task");
+      const runSqlTool = findLatestToolResult(toolResults, "run_sql");
+      const scoreTool = findLatestToolResult(toolResults, "score_task", { preferSuccessful: true });
 
       const normalizedSqlResult = getSqlRunResultPayload(runSqlTool?.result);
       const scorePayload = getScoreResultPayload(scoreTool?.result);
@@ -746,7 +775,8 @@ const theoryCompleted = useMemo(() => {
             ? JSON.stringify(runSqlTool.result, null, 2)
             : JSON.stringify(resp, null, 2),
         scoreResult: scorePayload,
-        agentFeedback: resp.reply || "Нет ответа модели",
+        agentFeedback: normalizePracticeReply(resp.reply || "Нет ответа модели"),
+        replySource: getReplySource(resp),
         locked: true,
       }));
     } catch (err: unknown) {
@@ -755,6 +785,7 @@ const theoryCompleted = useMemo(() => {
         runResult: null,
         scoreResult: null,
         agentFeedback: `Ошибка SQL-проверки: ${getErrorMessage(err)}`,
+        replySource: null,
       }));
     } finally {
       setIsRunningTests(false);
@@ -1233,6 +1264,7 @@ const goNextTask = () => {
                     </div>
                     <div style={{ display: "flex", gap: 8 }}>
                       <button
+                        data-testid="review-sql-button"
                         className="primary"
                         onClick={() => reviewSqlWithModel(currentTask)}
                         disabled={!sessionId || isRunningTests || isScoring || currentTaskLocked}
@@ -1243,6 +1275,7 @@ const goNextTask = () => {
                   </div>
 
                   <textarea
+                    data-testid="sql-draft-input"
                     value={currentDraft}
                     onChange={(e) => {
                       if (!currentTask || currentTask.type !== "sql") return;
@@ -1293,20 +1326,19 @@ const goNextTask = () => {
                     <div className="log">
                       <p className="label">Комментарий модели</p>
 
-                      {currentAgentFeedback ? (
+                      {currentScoreResult ? (
                         <>
-                          {currentScoreResult && (
-                            <p><strong>Оценка:</strong> {currentScoreResult.points}/{currentTask?.max_points ?? 10}</p>
-                          )}
-                          <ReactMarkdown>{currentAgentFeedback}</ReactMarkdown>
+                          <p><strong>Оценка:</strong> {currentScoreResult.points}/{currentTask?.max_points ?? 10}</p>
+                          {currentReplySource !== "fallback" && currentAgentFeedback ? (
+                            <ReactMarkdown>{currentAgentFeedback}</ReactMarkdown>
+                          ) : currentScoreResult.comment ? (
+                            <ReactMarkdown>{formatCodeScoreComment(currentScoreResult.comment)}</ReactMarkdown>
+                          ) : currentAgentFeedback ? (
+                            <ReactMarkdown>{currentAgentFeedback}</ReactMarkdown>
+                          ) : null}
                         </>
                       ) : (
-                        <>
-                          {currentScoreResult && (
-                            <p><strong>Оценка:</strong> {currentScoreResult.points}/{currentTask?.max_points ?? 10}</p>
-                          )}
-                          <ReactMarkdown>{formatCodeScoreComment(currentScoreResult?.comment || "")}</ReactMarkdown>
-                        </>
+                        <ReactMarkdown>{currentAgentFeedback || ""}</ReactMarkdown>
                       )}
                     </div>
                   )}
@@ -1340,9 +1372,13 @@ const goNextTask = () => {
                       {currentScoreResult ? (
                         <>
                           <p><strong>Оценка:</strong> {currentScoreResult.points}/{currentTask?.max_points ?? 10}</p>
-                          {currentScoreResult.comment && (
+                          {currentReplySource !== "fallback" && currentAgentFeedback ? (
+                            <ReactMarkdown>{currentAgentFeedback}</ReactMarkdown>
+                          ) : currentScoreResult.comment ? (
                             <ReactMarkdown>{formatSqlScoreComment(currentScoreResult.comment)}</ReactMarkdown>
-                          )}
+                          ) : currentAgentFeedback ? (
+                            <ReactMarkdown>{formatSqlScoreComment(currentAgentFeedback)}</ReactMarkdown>
+                          ) : null}
                         </>
                       ) : (
                         <ReactMarkdown>{formatSqlScoreComment(currentAgentFeedback || "")}</ReactMarkdown>

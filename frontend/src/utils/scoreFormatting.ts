@@ -17,6 +17,42 @@ function splitImprovementItems(value: string): string[] {
   return [raw];
 }
 
+const LEADING_SCORE_LINE_RE = /^\s*(?:\*\*)?(?:оценка|балл)(?:\*\*)?\s*:\s*(?:не выставлена.*|\d+(?:[.,]\d+)?\s*\/\s*\d+)\s*$/i;
+const LEADING_POINTS_LINE_RE = /^\s*points?\s*:\s*\d+(?:[.,]\d+)?(?:\s*\/\s*\d+)?\s*$/i;
+const LEADING_COMMENT_LABEL_RE = /^\s*(?:comment|комментарий)\s*:\s*(.*)\s*$/i;
+
+export function normalizePracticeReply(reply: string): string {
+  const lines = String(reply || "").split("\n");
+
+  while (lines.length) {
+    const first = lines[0]?.trim() || "";
+    if (!first) {
+      lines.shift();
+      continue;
+    }
+
+    if (LEADING_SCORE_LINE_RE.test(first) || LEADING_POINTS_LINE_RE.test(first)) {
+      lines.shift();
+      continue;
+    }
+
+    const commentMatch = first.match(LEADING_COMMENT_LABEL_RE);
+    if (commentMatch) {
+      const tail = (commentMatch[1] || "").trim();
+      if (tail) {
+        lines[0] = tail;
+      } else {
+        lines.shift();
+      }
+      continue;
+    }
+
+    break;
+  }
+
+  return lines.join("\n").trim();
+}
+
 function buildFormattedComment(comment: string, headers: string[], mainHeaders: string[]): string {
   const raw = (comment || "").trim();
   if (!raw) return raw;

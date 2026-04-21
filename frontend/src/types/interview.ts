@@ -123,6 +123,7 @@ export type ToolResultItem = {
 
 export type PracticeAgentResponse = {
   reply?: string;
+  reply_source?: "model" | "fallback";
   tool_results?: ToolResultItem[];
 };
 

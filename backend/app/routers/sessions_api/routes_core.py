@@ -306,6 +306,7 @@ def _practice_sql_review(
         f"Качество решения: ...\n"
         f"Работа с SQL: ...\n"
         f"Что можно улучшить: ...\n"
+        f"5. В финальном ответе кандидату не дублируй балл отдельной строкой: он уже отображается в UI.\n"
     )
 
     return _practice_sql_agent_review(
@@ -409,6 +410,7 @@ def practice_code(session_id: str, payload: PracticeCodeRequest, db: Session = D
         "- Нельзя использовать квадратные скобки, шаблонные инструкции или текст вида 'заполни'.\n"
         "- Для секции 'Сложность и эффективность' можно написать, что для данной задачи отдельные замечания по сложности несущественны, если это действительно так.\n"
         "- Балл не должен определяться только по passrate: учитывай также качество решения.\n"
+        "- В финальном ответе кандидату не дублируй балл отдельной строкой: он уже отображается в UI.\n"
         "- Финальный ответ кандидату должен быть обычным текстом, без JSON и без служебных полей.\n\n"
         f"КОД КАНДИДАТА:\n{payload.code}\n"
     )
@@ -420,4 +422,8 @@ def practice_code(session_id: str, payload: PracticeCodeRequest, db: Session = D
         task_id=payload.task_id,
     )
 
-    return {"reply": review["reply"], "tool_results": review.get("tool_results", [])}
+    return {
+        "reply": review["reply"],
+        "tool_results": review.get("tool_results", []),
+        "reply_source": review.get("reply_source", "model"),
+    }

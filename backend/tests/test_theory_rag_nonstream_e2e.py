@@ -243,6 +243,192 @@ def test_nonstream_theory_flow_uses_contract_repair_and_final_points(
     assert session.scores["T-DOCS"] == 5.0
 
 
+def test_nonstream_theory_rag_autofills_missing_final_comments_from_intermediate_scores(
+    client,
+    db_session,
+    theory_scenario_factory,
+    embeddings_backend,
+    monkeypatch,
+):
+    corpus_id = _create_corpus_with_document(client)
+    scenario = theory_scenario_factory(rag_corpus_id=corpus_id)
+
+    session = models.Session(
+        scenario_id=scenario.id,
+        role_id=scenario.role_id,
+        state="active",
+        current_task_id="T-DOCS",
+    )
+    db_session.add(session)
+    db_session.commit()
+    db_session.refresh(session)
+
+    db_session.add(
+        models.Message(
+            session_id=session.id,
+            sender="model",
+            text="**Вопрос 1/1:** Что такое идемпотентность и как она связана с POST?",
+            task_id="T-DOCS",
+        )
+    )
+    db_session.add(
+        models.Message(
+            session_id=session.id,
+            sender="candidate",
+            text=(
+                "Идемпотентность означает, что повтор операции с теми же входными данными "
+                "не меняет итог после первого успешного применения. POST обычно не идемпотентен."
+            ),
+            task_id="T-DOCS",
+        )
+    )
+    db_session.commit()
+
+    state = {"summary_calls": 0, "tool_sequences": []}
+
+    def fake_chat(messages, tools=None, tool_choice=None, temperature=0.2):
+        system_text = "\n".join(str(item.get("content") or "") for item in messages if item.get("role") == "system")
+        tool_names = {
+            (tool.get("function") or {}).get("name")
+            for tool in (tools or [])
+            if (tool.get("function") or {}).get("name")
+        }
+
+        if tools:
+            state["tool_sequences"].append(tool_names)
+            assert "run_code" not in tool_names
+            assert "run_sql" not in tool_names
+
+            if "rag_search" in tool_names:
+                args = {
+                    "query": "идемпотентность POST",
+                    "task_id": "T-DOCS",
+                    "question_index": 1,
+                    "top_k": 3,
+                }
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "tool_calls": [
+                                    {
+                                        "id": "rag_search_call",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "rag_search",
+                                            "arguments": json.dumps(args, ensure_ascii=False),
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                }
+
+            assert tool_names == {"score_task"}
+            if "Все промежуточные оценки theory-блока уже сохранены" in system_text:
+                args = {
+                    "task_id": "T-DOCS",
+                    "points": 6.0,
+                    "comment": (
+                        "Кандидат уверенно понимает базовую идею идемпотентности и корректно связывает её с POST. "
+                        "Для более сильного результата не хватило более точного объяснения границ между HTTP-семантикой и поведением конкретного API."
+                    ),
+                    "is_final": True,
+                    "question_index": None,
+                }
+            else:
+                args = {
+                    "task_id": "T-DOCS",
+                    "points": 6.0,
+                    "comment": (
+                        "Ответ подтверждается документами сценария и корректно объясняет базовый смысл идемпотентности. "
+                        "Связь с POST указана верно, но формулировку можно сделать точнее."
+                    ),
+                    "is_final": False,
+                    "question_index": 1,
+                }
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "tool_calls": [
+                                {
+                                    "id": "score_task_call",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "score_task",
+                                        "arguments": json.dumps(args, ensure_ascii=False),
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            }
+
+        state["summary_calls"] += 1
+        assert "THEORY_FINAL_MESSAGE_CONTRACT" in system_text
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": (
+                            "**Итоги теоретической части**\n\n"
+                            "Теоретический блок завершён. Кандидат показал хорошее базовое понимание темы, "
+                            "но часть деталей объяснил слишком общо.\n\n"
+                            "- **Идемпотентность и POST:** Кандидат корректно объяснил базовую идею идемпотентности "
+                            "и верно отметил, что POST обычно не считается идемпотентным, но не раскрыл, "
+                            "где заканчивается свойство метода и начинается поведение конкретного API.\n\n"
+                            "**Сильные стороны:**\n"
+                            "- Понимает базовую HTTP-семантику.\n\n"
+                            "**Зоны роста:**\n"
+                            "- Добавлять больше технической конкретики в развёрнутый ответ.\n\n"
+                            "**Итоговая оценка по теоретическому блоку:** 6/10."
+                        ),
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(nonstream_module.lm_client, "chat", fake_chat)
+
+    response = client.post(f"/sessions/{session.id}/lm/chat")
+    assert response.status_code == 200
+    final_text = response.json()["message"]["content"]
+
+    assert "**Итоговая оценка по теоретическому блоку:** 6/10." in final_text
+    assert "Идемпотентность и POST" in final_text
+
+    tool_messages = (
+        db_session.query(models.Message)
+        .filter_by(session_id=session.id, sender="tool")
+        .order_by(models.Message.created_at.asc(), models.Message.id.asc())
+        .all()
+    )
+    assert len(tool_messages) == 3
+    assert all("Final theory comments are required" not in (message.text or "") for message in tool_messages)
+    assert "'comments': [" in (tool_messages[-1].text or "")
+
+    scores = (
+        db_session.query(models.Score)
+        .filter_by(session_id=session.id, task_id="T-DOCS")
+        .order_by(models.Score.created_at.asc(), models.Score.id.asc())
+        .all()
+    )
+    assert len(scores) == 2
+    assert scores[0].is_final is False
+    assert scores[1].is_final is True
+    assert scores[1].points == 6.0
+    assert state["tool_sequences"] == [{"rag_search"}, {"score_task"}, {"score_task"}]
+    assert state["summary_calls"] == 1
+    assert embeddings_backend.document_calls
+    assert embeddings_backend.query_calls
+
+
 def test_nonstream_theory_rag_final_points_are_capped_by_intermediate_avg(
     client,
     db_session,
