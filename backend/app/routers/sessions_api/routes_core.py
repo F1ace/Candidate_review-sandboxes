@@ -5,8 +5,7 @@ from sqlalchemy.orm import Session
 
 from ... import models, schemas
 from ...database import get_db
-from ...services import sandbox, web_search, sql_runner, sql_evaluator
-from ...services.theory_rag import (find_candidate_answer_message, get_existing_validation, theory_rag_required,)
+from ...services import sandbox, sql_runner, sql_evaluator
 from .practice import _practice_agent_review, _practice_sql_agent_review
 from .router import router
 from .schemas import PracticeCodeRequest, PracticeSqlRequest
@@ -356,13 +355,6 @@ def complete_session(session_id: str, db: Session = Depends(get_db)):
     session.finished_at = datetime.utcnow()
     db.commit()
     return {"status": "ok"}
-
-@router.post("/{session_id}/web-search")
-def run_web_search(session_id: str, payload: schemas.WebSearchRequest, db: Session = Depends(get_db)):
-    if not db.get(models.Session, session_id):
-        raise HTTPException(status_code=404, detail="Session not found")
-    results = web_search.web_search(payload.query, payload.top_k)
-    return {"results": results}
 
 @router.post("/{session_id}/practice/code")
 def practice_code(session_id: str, payload: PracticeCodeRequest, db: Session = Depends(get_db)):

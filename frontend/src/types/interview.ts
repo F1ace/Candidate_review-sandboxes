@@ -115,6 +115,56 @@ export type ScoreResultPayload = {
   task_id?: string;
 };
 
+export type InterviewReportSection = {
+  title: string;
+  summary: string;
+  highlights: string[];
+};
+
+export type InterviewReportTask = {
+  task_id: string;
+  title: string;
+  task_type: string;
+  score?: number | null;
+  max_points: number;
+  ratio?: number | null;
+  summary: string;
+  highlights: string[];
+  score_comment?: string | null;
+};
+
+export type InterviewReport = {
+  session_id: string;
+  generated_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  duration_minutes: number;
+  candidate_id?: string | null;
+  role_name: string;
+  role_slug: string;
+  scenario_name: string;
+  scenario_slug: string;
+  difficulty?: string | null;
+  headline: string;
+  executive_summary: string;
+  overall_assessment: string;
+  closing_note: string;
+  recommendation_label: string;
+  recommendation_summary: string;
+  generation_mode: string;
+  overall_score: number;
+  overall_max: number;
+  overall_ratio?: number | null;
+  scored_tasks: number;
+  total_tasks: number;
+  candidate_message_count: number;
+  model_message_count: number;
+  strengths: string[];
+  growth_areas: string[];
+  sections: InterviewReportSection[];
+  task_breakdown: InterviewReportTask[];
+};
+
 export type ToolResultItem = {
   name?: string;
   tool?: string;

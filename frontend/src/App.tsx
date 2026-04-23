@@ -6,6 +6,7 @@ import { RunSqlSummary } from "./components/RunSqlSummary";
 import { SqlSchemaPreview } from "./components/SqlSchemaPreview";
 import { SectionHeader } from "./components/SectionHeader";
 import type {
+  InterviewReport,
   Message,
   PracticeAgentResponse,
   RagCorpus,
@@ -22,7 +23,12 @@ import type {
   SqlRunResult,
   SqlScenario,
 } from "./types/interview";
-import { formatCodeScoreComment, formatSqlScoreComment, normalizePracticeReply } from "./utils/scoreFormatting";
+import {
+  renderInterviewReportErrorWindow,
+  renderInterviewReportLoadingWindow,
+  renderInterviewReportWindow,
+} from "./utils/reportExport";
+import { formatCodeScoreComment, formatSqlScoreComment } from "./utils/scoreFormatting";
 import "./App.css";
 
 const defaultTasks: Task[] = [
@@ -214,6 +220,7 @@ function App() {
   const [currentTaskIndex, setCurrentTaskIndex] = useState(0);
   const [sessionScores, setSessionScores] = useState<Record<string, number>>({});
   const [sessionMode, setSessionMode] = useState<"theory" | "practice">("theory");
+  const [isExportingReport, setIsExportingReport] = useState(false);
 
   const selectedScenarioObj = useMemo(
     () => scenarios.find((s) => s.id === selectedScenario),
@@ -316,6 +323,9 @@ const theoryCompleted = useMemo(() => {
   if (!theoryTasks.length) return false;
   return theoryTasks.every((t) => sessionScores[t.id] !== undefined);
 }, [theoryTasks, sessionScores]);
+
+  const scoredTasksCount = Object.keys(sessionScores).length;
+  const canExportReport = Boolean(sessionId) && (messages.length > 0 || scoredTasksCount > 0);
 
   const firstPracticeIndex = useMemo(() => {
   // индекс первого задания НЕ theory (coding/sql)
@@ -976,6 +986,36 @@ const goNextTask = () => {
     }
   };
 
+  const exportInterviewReport = async () => {
+    if (!sessionId) {
+      setStatus("Сначала запустите интервью");
+      return;
+    }
+
+    const reportWindow = window.open("", "_blank");
+    if (!reportWindow) {
+      setStatus("Разрешите всплывающее окно для выгрузки PDF-отчёта");
+      return;
+    }
+
+    renderInterviewReportLoadingWindow(reportWindow);
+    setIsExportingReport(true);
+
+    try {
+      const report = await fetchJson<InterviewReport>(`/sessions/${sessionId}/report`, {
+        method: "POST",
+      });
+      renderInterviewReportWindow(reportWindow, report);
+      setStatus("Отчёт подготовлен");
+    } catch (err: unknown) {
+      const message = getErrorMessage(err);
+      renderInterviewReportErrorWindow(reportWindow, message);
+      setStatus(`Не удалось собрать отчёт: ${message}`);
+    } finally {
+      setIsExportingReport(false);
+    }
+  };
+
   return (
     <div className="page">
       <header className="hero">
@@ -1008,6 +1048,18 @@ const goNextTask = () => {
           <p className="muted">Сессия</p>
           <h3>{sessionId || "не создана"}</h3>
           <p className="muted">{selectedScenarioObj?.name || "Выберите сценарий"}</p>
+          {view === "session" && (
+            <div className="status-card-actions">
+              <p className="muted">Оценено блоков: {scoredTasksCount}/{orderedTasks.length || 0}</p>
+              <button
+                className="primary status-card-button"
+                onClick={exportInterviewReport}
+                disabled={!canExportReport || isExportingReport}
+              >
+                {isExportingReport ? "Готовим PDF..." : "Выгрузить PDF-отчёт"}
+              </button>
+            </div>
+          )}
         </div>
       </header>
 

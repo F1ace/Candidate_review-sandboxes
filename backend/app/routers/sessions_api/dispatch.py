@@ -5,13 +5,8 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ... import models
-from ...services import sandbox, web_search, sql_runner
-from ...services.rag import search_document_chunks
-from ...services.theory_rag import (
-    find_candidate_answer_message,
-    get_existing_validation,
-    theory_rag_required,
-)
+from ...services import sandbox, sql_runner
+from ...services.rag import search_documents
 from .state import _get_task_by_id
 from .tool_errors import (THEORY_COMMENT_EMPTY, THEORY_COMMENT_TOO_SHORT, THEORY_COMMENT_TRUNCATED, THEORY_COMMENT_TEMPLATE, THEORY_FINAL_TEXTUAL_SCORE, THEORY_FINAL_COMMENTS_REQUIRED, THEORY_FINAL_COMMENTS_TEXTUAL_SCORE,)
 
@@ -236,16 +231,6 @@ def _dispatch_tool_call(session: models.Session, tc: dict[str, Any], db: Session
             args = _normalize_theory_tool_score_args(args, task)
             args = _hydrate_internal_final_theory_comments(session, db, args, task)
             return _apply_score(session, args, db)
-
-        if name == "web_search":
-            query = (args.get("query") or "").strip()
-            if not query:
-                return {"ok": False, "error": "query is required"}
-            top_k = int(args.get("top_k") or 5)
-            return {
-                "ok": True,
-                "results": web_search.web_search(query=query, top_k=top_k),
-            }
 
         if name == "rag_search":
             query = (args.get("query") or "").strip()

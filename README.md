@@ -67,15 +67,6 @@ Use `.env.example` as base. Key runtime variables:
 - `LM_MODEL=openai/gpt-oss-20b`
 - `SANDBOX_CODE_URL=http://localhost:8001/run_code`
 - `SANDBOX_SQL_URL=http://localhost:8002/run_sql`
-- `WEB_SEARCH_URL=http://localhost:8003/search`
-- `MINIO_ENDPOINT=localhost:9000`
-- `MINIO_ACCESS_KEY=minioadmin`
-- `MINIO_SECRET_KEY=minioadmin`
-- `MINIO_BUCKET=rag-documents`
-- `MINIO_SECURE=false`
-- `RAG_CHUNK_SIZE=900`
-- `RAG_CHUNK_OVERLAP=150`
-- `RAG_DEFAULT_TOP_K=5`
 - `ALLOW_ORIGINS=*`
 
 ## Main API Groups

@@ -45,6 +45,17 @@
   border-radius: 12px;
 }
 
+.status-card-actions {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.status-card-button {
+  width: 100%;
+  justify-content: center;
+}
+
 .accent {
   color: #7ee0ff;
 }

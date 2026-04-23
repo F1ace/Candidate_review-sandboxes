@@ -60,9 +60,6 @@ def looks_like_tool_dump(text: str) -> bool:
         return True
     if "to=rag_search" in low:
         return True
-    if "to=web_search" in low:
-        return True
-
     if "<channel>commentary" in low and "to=" in low:
         return True
     if "<|channel|>commentary" in low and "to=" in low:
