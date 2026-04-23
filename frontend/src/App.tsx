@@ -28,7 +28,7 @@ import {
   renderInterviewReportLoadingWindow,
   renderInterviewReportWindow,
 } from "./utils/reportExport";
-import { formatCodeScoreComment, formatSqlScoreComment } from "./utils/scoreFormatting";
+import { formatCodeScoreComment, formatSqlScoreComment, normalizePracticeReply } from "./utils/scoreFormatting";
 import "./App.css";
 
 const defaultTasks: Task[] = [

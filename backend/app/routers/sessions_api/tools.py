@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from typing import Any
 
@@ -8,14 +8,26 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "rag_search",
-            "description": "РџРѕРёСЃРє РїРѕ Р·Р°РіСЂСѓР¶РµРЅРЅРѕР№ РґРѕРєСѓРјРµРЅС‚Р°С†РёРё СЃС†РµРЅР°СЂРёСЏ.",
+            "description": (
+                "Поиск по загруженной документации сценария для проверки ответа кандидата "
+                "в теоретическом блоке. Используй перед промежуточным score_task, если "
+                "для сценария доступен RAG."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {"type": "string"},
+                    "task_id": {
+                        "type": "string",
+                        "description": "ID theory-задачи, например T1",
+                    },
+                    "question_index": {
+                        "type": "integer",
+                        "description": "Номер вопроса theory-блока (1-based)",
+                    },
                     "top_k": {"type": "integer"},
                 },
-                "required": ["query"],
+                "required": ["query", "task_id", "question_index"],
             },
         },
     },
@@ -23,21 +35,24 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "run_code",
-            "description": "Р‘РµР·РѕРїР°СЃРЅРѕ РІС‹РїРѕР»РЅРёС‚СЊ РєРѕРґ РєР°РЅРґРёРґР°С‚Р° РІ РїРµСЃРѕС‡РЅРёС†Рµ СЃ С‚РµСЃС‚-РєРµР№СЃР°РјРё, СЃРІСЏР·Р°РЅРЅС‹РјРё СЃ Р·Р°РґР°С‡РµР№ РІ Р‘Р”. РСЃРїРѕР»СЊР·СѓР№ РґР»СЏ РїСЂРѕРІРµСЂРєРё coding-Р·Р°РґР°С‡. Р’РѕР·РІСЂР°С‰Р°Р№СЃСЏ Рє score_task С‚РѕР»СЊРєРѕ РїРѕСЃР»Рµ РїРѕР»СѓС‡РµРЅРёСЏ СЂРµР·СѓР»СЊС‚Р°С‚Р° С‚РµСЃС‚РѕРІ.",
+            "description": (
+                "Безопасно выполнить код кандидата в песочнице с тест-кейсами, связанными с задачей в БД. "
+                "Используй для проверки coding-задач. Возвращайся к score_task только после получения результата тестов."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "task_id": {
                         "type": "string",
-                        "description": "ID Р·Р°РґР°РЅРёСЏ РёР· СЃС†РµРЅР°СЂРёСЏ, РЅР°РїСЂРёРјРµСЂ C-SHORTENER",
+                        "description": "ID задания из сценария, например C-SHORTENER",
                     },
                     "language": {
                         "type": "string",
-                        "description": "РЇР·С‹Рє СЂРµС€РµРЅРёСЏ, РЅР°РїСЂРёРјРµСЂ python",
+                        "description": "Язык решения, например python",
                     },
                     "code": {
                         "type": "string",
-                        "description": "РСЃС…РѕРґРЅС‹Р№ РєРѕРґ РєР°РЅРґРёРґР°С‚Р°",
+                        "description": "Исходный код кандидата",
                     },
                 },
                 "required": ["task_id", "language", "code"],
@@ -48,13 +63,16 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "run_sql",
-            "description": "Р’С‹РїРѕР»РЅРёС‚СЊ SQL-Р·Р°РїСЂРѕСЃ РєР°РЅРґРёРґР°С‚Р° РІ РїРµСЃРѕС‡РЅРёС†Рµ РїРѕ sql_scenario_id Рё РІРµСЂРЅСѓС‚СЊ СЂРµР·СѓР»СЊС‚Р°С‚ (columns/rows) РёР»Рё РѕС€РёР±РєСѓ.",
+            "description": (
+                "Выполнить SQL-запрос кандидата в песочнице по sql_scenario_id и вернуть результат "
+                "(columns/rows) или ошибку."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "task_id": {"type": "string", "description": "ID Р·Р°РґР°РЅРёСЏ (РµСЃР»Рё РёР·РІРµСЃС‚РЅРѕ)"},
-                    "sql_scenario_id": {"type": "string", "description": "ID SQL-СЃС†РµРЅР°СЂРёСЏ РёР· Р‘Р”"},
-                    "query": {"type": "string", "description": "SQL Р·Р°РїСЂРѕСЃ РєР°РЅРґРёРґР°С‚Р°"},
+                    "task_id": {"type": "string", "description": "ID задания (если известно)"},
+                    "sql_scenario_id": {"type": "string", "description": "ID SQL-сценария из БД"},
+                    "query": {"type": "string", "description": "SQL-запрос кандидата"},
                 },
                 "required": ["query"],
             },
@@ -64,7 +82,10 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "score_task",
-            "description": "РџРѕСЃС‚Р°РІРёС‚СЊ Р±Р°Р»Р»С‹ Р·Р° Р·Р°РґР°РЅРёРµ РєР°РЅРґРёРґР°С‚Сѓ. Р”Р»СЏ theory РјРѕР¶РЅРѕ СЃРѕС…СЂР°РЅСЏС‚СЊ РїСЂРѕРјРµР¶СѓС‚РѕС‡РЅС‹Рµ РѕС†РµРЅРєРё РїРѕСЃР»Рµ РєР°Р¶РґРѕРіРѕ РІРѕРїСЂРѕСЃР° Рё РѕРґРЅСѓ С„РёРЅР°Р»СЊРЅСѓСЋ РѕС†РµРЅРєСѓ РїРѕСЃР»Рµ Р·Р°РІРµСЂС€РµРЅРёСЏ РІСЃРµРіРѕ Р±Р»РѕРєР°.",
+            "description": (
+                "Поставить баллы за задание кандидату. Для theory можно сохранять промежуточные оценки после "
+                "каждого вопроса и одну финальную оценку после завершения всего блока."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -72,19 +93,41 @@ TOOLS = [
                     "points": {
                         "type": "number",
                         "multipleOf": 1,
-                        "description": "РћС†РµРЅРєР° РґРѕР»Р¶РЅР° Р±С‹С‚СЊ С†РµР»С‹Рј С‡РёСЃР»РѕРј, РЅРѕ РєРѕРґРёСЂРѕРІР°С‚СЊСЃСЏ РєР°Рє С‡РёСЃР»Рѕ СЃ РїР»Р°РІР°СЋС‰РµР№ С‚РѕС‡РєРѕР№ СЃРѕ Р·РЅР°С‡РµРЅРёРµРј .0 (РЅР°РїСЂРёРјРµСЂ, 7.0). Р”Р»СЏ theory РёСЃРїРѕР»СЊР·СѓР№ С€РєР°Р»Сѓ 1..10. Р”Р»СЏ coding/sql вЂ” РґРёР°РїР°Р·РѕРЅ 0..max_points.",
+                        "description": (
+                            "Оценка должна быть целым числом, но кодироваться как число с плавающей точкой со "
+                            "значением .0 (например, 7.0). Для theory используй диапазон 1..max_points текущей "
+                            "задачи. Для coding/sql — диапазон 0..max_points."
+                        ),
                     },
                     "comment": {
                         "type": "string",
-                        "description": "РќРµРїСѓСЃС‚РѕР№ РєРѕРјРјРµРЅС‚Р°СЂРёР№. Р”Р»СЏ theory РїРѕСЃР»Рµ РєР°Р¶РґРѕРіРѕ РІРѕРїСЂРѕСЃР° вЂ” РєСЂР°С‚РєРёР№ РєРѕРјРјРµРЅС‚Р°СЂРёР№ Рє РѕС‚РІРµС‚Сѓ РЅР° РєРѕРЅРєСЂРµС‚РЅС‹Р№ РІРѕРїСЂРѕСЃ. Р”Р»СЏ С„РёРЅР°Р»СЊРЅРѕРіРѕ РІС‹Р·РѕРІР° вЂ” РёС‚РѕРіРѕРІС‹Р№ РєРѕРјРјРµРЅС‚Р°СЂРёР№ РїРѕ Р±Р»РѕРєСѓ.",
+                        "description": (
+                            "Обязательный непустой комментарий. Theory: по-русски, минимум 2 полных предложения, "
+                            "желательно в формате 'Верно / Не хватает / Ошибка/сомнение'. Для финального theory "
+                            "score_task это общий качественный итог по блоку без числовой оценки текстом. Coding: "
+                            "'Корректность / Качество кода / Сложность и эффективность / Что можно улучшить'. SQL: "
+                            "'Корректность / Качество решения / Работа с SQL / Что можно улучшить'."
+                        ),
+                    },
+                    "comments": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Только для финального theory score_task: список комментариев по каждому вопросу текущей "
+                            "theory-задачи в порядке вопросов. Каждый элемент должен описывать ответ кандидата по "
+                            "соответствующему вопросу без числовой оценки текстом."
+                        ),
                     },
                     "is_final": {
                         "type": "boolean",
-                        "description": "Р”Р»СЏ theory: false РїРѕСЃР»Рµ РєР°Р¶РґРѕРіРѕ РѕС‚РґРµР»СЊРЅРѕРіРѕ РІРѕРїСЂРѕСЃР°, true С‚РѕР»СЊРєРѕ РѕРґРёРЅ СЂР°Р· РїРѕСЃР»Рµ Р·Р°РІРµСЂС€РµРЅРёСЏ РІСЃРµРіРѕ Р±Р»РѕРєР°. Р”Р»СЏ coding/sql РѕСЃС‚Р°РІР»СЏР№ true.",
+                        "description": (
+                            "Для theory: false после каждого отдельного вопроса, true только один раз после завершения "
+                            "всего блока. Для coding/sql оставляй true."
+                        ),
                     },
                     "question_index": {
                         "type": "integer",
-                        "description": "Р”Р»СЏ theory: РЅРѕРјРµСЂ РІРѕРїСЂРѕСЃР° РІ Р±Р»РѕРєРµ (1-based) РґР»СЏ РїСЂРѕРјРµР¶СѓС‚РѕС‡РЅРѕР№ РѕС†РµРЅРєРё.",
+                        "description": "Для theory: номер вопроса в блоке (1-based) для промежуточной оценки.",
                     },
                 },
                 "required": ["task_id", "points", "comment"],
@@ -92,3 +135,62 @@ TOOLS = [
         },
     },
 ]
+
+ALL_TOOLS = TOOLS
+
+
+def get_tools_by_names(names: list[str]) -> list[dict[str, Any]]:
+    allowed = set(names)
+    return [
+        tool for tool in ALL_TOOLS
+        if tool.get("function", {}).get("name") in allowed
+    ]
+
+
+def theory_tools(rag_available: bool) -> list[dict[str, Any]]:
+    names = ["score_task"]
+    if rag_available:
+        names.insert(0, "rag_search")
+    return get_tools_by_names(names)
+
+
+def coding_tools() -> list[dict[str, Any]]:
+    return get_tools_by_names(["run_code", "score_task"])
+
+
+def sql_tools() -> list[dict[str, Any]]:
+    return get_tools_by_names(["run_sql", "score_task"])
+
+
+def rag_search_only_tools() -> list[dict[str, Any]]:
+    return get_tools_by_names(["rag_search"])
+
+
+def tools_for_task(current_task: dict[str, Any] | None, rag_available: bool) -> list[dict[str, Any]] | None:
+    task_type = (current_task or {}).get("type")
+    if task_type == "theory":
+        return theory_tools(rag_available=rag_available)
+    if task_type == "coding":
+        return coding_tools()
+    if task_type == "sql":
+        return sql_tools()
+    return None
+
+
+def tool_names(tools: list[dict[str, Any]] | None) -> set[str]:
+    names: set[str] = set()
+    for tool in tools or []:
+        name = (tool.get("function") or {}).get("name")
+        if name:
+            names.add(str(name))
+    return names
+
+
+def restrict_inline_tool_names(
+    allowed_tool_names: set[str] | None,
+    task_type: str | None,
+) -> set[str]:
+    names = set(allowed_tool_names or set())
+    if task_type == "theory":
+        names &= {"rag_search", "score_task"}
+    return names
