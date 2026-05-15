@@ -218,7 +218,7 @@ def test_nonstream_theory_flow_uses_contract_repair_and_final_points(
     assert len(validations) == 1
     assert validations[0].result_count >= 1
     assert "POST" in json.dumps(validations[0].evidence, ensure_ascii=False)
-    assert validations[0].evidence[0]["metadata"]["retrieval_backend"] == "langchain_inmemory_vectorstore"
+    assert validations[0].evidence[0]["metadata"]["retrieval_backend"] == "pgvector"
     assert validations[0].evidence[0]["metadata"]["embedding_model"] == "fake-lmstudio-embedding"
     assert embeddings_backend.document_calls
     assert embeddings_backend.query_calls

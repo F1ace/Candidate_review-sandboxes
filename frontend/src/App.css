@@ -325,6 +325,16 @@ button:hover {
   box-shadow: 0 6px 16px rgba(15, 23, 42, 0.16);
 }
 
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+button:disabled:hover {
+  transform: none;
+  box-shadow: none;
+}
+
 .primary {
   background: linear-gradient(120deg, #0b3b4b, #158ec2);
   color: #fff;

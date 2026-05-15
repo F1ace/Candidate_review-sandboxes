@@ -6,6 +6,11 @@ from sqlalchemy.orm import Session
 from ... import models, schemas
 from ...database import get_db
 from ...services import sandbox, sql_runner, sql_evaluator
+from ...services.theory_rag import (
+    find_candidate_answer_message,
+    get_existing_validation,
+    theory_rag_required,
+)
 from .practice import _practice_agent_review, _practice_sql_agent_review
 from .router import router
 from .schemas import PracticeCodeRequest, PracticeSqlRequest

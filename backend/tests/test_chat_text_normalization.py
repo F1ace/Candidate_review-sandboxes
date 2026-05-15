@@ -4,6 +4,7 @@ import json
 
 from app import models
 from app.routers.sessions_api import nonstream as nonstream_module
+from app.routers.sessions_api import prompting as prompting_module
 from app.routers.sessions_api import streaming as streaming_module
 
 
@@ -60,6 +61,14 @@ def _create_theory_session(
     return session
 
 
+def _complete_opening(session: models.Session) -> str:
+    return (
+        f'Привет! Я проведу интервью на роль {session.role.name} по сценарию "{session.scenario.name}". '
+        "Цель интервью — понять, как вы рассуждаете и отвечаете на вопросы этого сценария.\n\n"
+        "**Вопрос 1/1:** Что такое идемпотентность?"
+    )
+
+
 def test_build_theory_question_message_uses_utf8_question_text(db_session):
     session = _create_theory_session(
         db_session,
@@ -71,19 +80,49 @@ def test_build_theory_question_message_uses_utf8_question_text(db_session):
     assert message == "**Вопрос 1/1:** Что такое переобучение?"
 
 
-def test_streaming_first_message_adds_greeting_and_uses_russian_prompt(client, db_session, monkeypatch):
-    session = _create_theory_session(db_session)
+def test_first_model_greeting_preserves_model_text_without_backend_injection(db_session):
+    session = _create_theory_session(db_session, scenario_name="Theory greeting preserved")
+
+    result = prompting_module._ensure_first_model_greeting(
+        'Привет! Я проведу интервью на роль Backend по сценарию "Theory greeting preserved". '
+        "Цель интервью — коротко обозначить контекст и сразу перейти к вопросу.",
+        session,
+    )
+
+    assert result.startswith("Привет!")
+    assert result.count("Привет!") == 1
+    assert "Здравствуйте! Проведу для вас интервью" not in result
+
+
+def test_streaming_first_message_is_repaired_by_model_with_role_scenario_and_goal(client, db_session, monkeypatch):
+    session = _create_theory_session(db_session, scenario_name="Theory streaming")
+    calls = 0
 
     def fake_chat(messages, tools=None, tool_choice=None, temperature=0.2):
+        nonlocal calls
+        calls += 1
         system_text = "\n".join(str(item.get("content") or "") for item in messages if item.get("role") == "system")
-        assert "Сначала кратко поприветствуй кандидата" in system_text
-        assert "Вопрос" in system_text
+        assert tools is None
+        if calls == 1:
+            assert "роль, сценарий и цель интервью" in system_text.lower()
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "Привет! Рада встрече.\n\n**Вопрос 1/1:** Что такое идемпотентность?",
+                        }
+                    }
+                ]
+            }
+
+        assert "цель интервью" in system_text.lower()
         return {
             "choices": [
                 {
                     "message": {
                         "role": "assistant",
-                        "content": "**Вопрос 1/1:** Что такое идемпотентность?",
+                        "content": _complete_opening(session),
                     }
                 }
             ]
@@ -95,8 +134,13 @@ def test_streaming_first_message_adds_greeting_and_uses_russian_prompt(client, d
     assert response.status_code == 200
 
     final_text = _parse_sse_done_content(response.text)
-    assert final_text.startswith("Здравствуйте!")
+    assert calls == 2
+    assert final_text.startswith("Привет!")
+    assert session.role.name in final_text
+    assert session.scenario.name in final_text
+    assert "Цель интервью" in final_text
     assert "**Вопрос 1/1:** Что такое идемпотентность?" in final_text
+    assert "Здравствуйте! Проведу для вас интервью" not in final_text
 
     db_session.expire_all()
     saved_messages = (
@@ -106,22 +150,38 @@ def test_streaming_first_message_adds_greeting_and_uses_russian_prompt(client, d
         .all()
     )
     assert saved_messages
-    assert saved_messages[-1].text.startswith("Здравствуйте!")
+    assert saved_messages[-1].text == final_text
 
 
-def test_nonstream_first_message_adds_greeting_and_uses_russian_prompt(client, db_session, monkeypatch):
+def test_nonstream_first_message_is_repaired_by_model_with_role_scenario_and_goal(client, db_session, monkeypatch):
     session = _create_theory_session(db_session, scenario_name="Theory nonstream")
+    calls = 0
 
     def fake_chat(messages, tools=None, tool_choice=None, temperature=0.2):
+        nonlocal calls
+        calls += 1
         system_text = "\n".join(str(item.get("content") or "") for item in messages if item.get("role") == "system")
-        assert "Сначала кратко поприветствуй кандидата" in system_text
-        assert "Вопрос" in system_text
+        assert tools is None
+        if calls == 1:
+            assert "роль, сценарий и цель интервью" in system_text.lower()
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "Привет! Рада встрече.\n\n**Вопрос 1/1:** Что такое идемпотентность?",
+                        }
+                    }
+                ]
+            }
+
+        assert "цель интервью" in system_text.lower()
         return {
             "choices": [
                 {
                     "message": {
                         "role": "assistant",
-                        "content": "**Вопрос 1/1:** Что такое идемпотентность?",
+                        "content": _complete_opening(session),
                     }
                 }
             ]
@@ -134,8 +194,13 @@ def test_nonstream_first_message_adds_greeting_and_uses_russian_prompt(client, d
 
     payload = response.json()
     final_text = payload["message"]["content"]
-    assert final_text.startswith("Здравствуйте!")
+    assert calls == 2
+    assert final_text.startswith("Привет!")
+    assert session.role.name in final_text
+    assert session.scenario.name in final_text
+    assert "Цель интервью" in final_text
     assert "**Вопрос 1/1:** Что такое идемпотентность?" in final_text
+    assert "Здравствуйте! Проведу для вас интервью" not in final_text
 
     db_session.expire_all()
     saved_message = (
@@ -145,4 +210,4 @@ def test_nonstream_first_message_adds_greeting_and_uses_russian_prompt(client, d
         .first()
     )
     assert saved_message is not None
-    assert saved_message.text.startswith("Здравствуйте!")
+    assert saved_message.text == final_text

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from fastapi.testclient import TestClient
 
@@ -8,6 +9,10 @@ from app import main as main_module, models
 from app.database import SessionLocal
 from app.routers.sessions_api import nonstream as nonstream_module
 from app.routers.sessions_api import streaming as streaming_module
+
+
+ROLE_RE = re.compile(r"Роль:\s*([^\(\n]+)")
+SCENARIO_RE = re.compile(r"Сценарий:\s*([^\(\n]+)")
 
 
 def _parse_sse_done_content(raw_text: str) -> str:
@@ -42,32 +47,57 @@ def _load_seeded_scenarios() -> list[models.Scenario]:
         return db.query(models.Scenario).order_by(models.Scenario.id.asc()).all()
 
 
+def _role_name_for_role_id(role_id: str) -> str:
+    with SessionLocal() as db:
+        return str(
+            db.query(models.Role.name)
+            .filter(models.Role.id == role_id)
+            .scalar()
+            or ""
+        )
+
+
+def _extract_names(system_text: str) -> tuple[str, str]:
+    role_match = ROLE_RE.search(system_text)
+    scenario_match = SCENARIO_RE.search(system_text)
+    assert role_match, system_text
+    assert scenario_match, system_text
+    role_name = role_match.group(1).strip().rstrip(".")
+    scenario_name = scenario_match.group(1).strip().rstrip(".")
+    return role_name, scenario_name
+
+
 def test_all_seeded_scenarios_start_cleanly_in_nonstream(monkeypatch):
-    def fake_chat(messages, tools=None, tool_choice=None, temperature=0.2):
-        system_text = "\n".join(str(item.get("content") or "") for item in messages if item.get("role") == "system")
-        assert "одно короткое приветствие" in system_text.lower()
-        assert "объясни всё, что знаешь" not in system_text.lower()
-        return {
-            "choices": [
-                {
-                    "message": {
-                        "role": "assistant",
-                        "content": (
-                            "Здравствуйте! Сейчас я подробно расскажу структуру интервью, "
-                            "критерии оценки, возможные переходы между блоками и все дальнейшие шаги."
-                        ),
-                    }
-                }
-            ]
-        }
-
-    monkeypatch.setattr(nonstream_module.lm_client, "chat", fake_chat)
-
     with TestClient(main_module.app) as client:
         scenarios = _load_seeded_scenarios()
         failures: list[str] = []
 
         for scenario in scenarios:
+            expected_question = _expected_first_question((scenario.tasks or [])[0])
+            expected_role = _role_name_for_role_id(scenario.role_id)
+
+            def fake_chat(messages, tools=None, tool_choice=None, temperature=0.2, *, _expected_question=expected_question):
+                system_text = "\n".join(str(item.get("content") or "") for item in messages if item.get("role") == "system")
+                assert "роль, сценарий и цель интервью" in system_text.lower()
+                assert tools is None
+                role_name, scenario_name = _extract_names(system_text)
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": (
+                                    f'Привет! Я проведу интервью на роль {role_name} по сценарию "{scenario_name}". '
+                                    "Цель интервью — оценить ваши ответы по заданиям этого сценария.\n\n"
+                                    f"{_expected_question}"
+                                ),
+                            }
+                        }
+                    ]
+                }
+
+            monkeypatch.setattr(nonstream_module.lm_client, "chat", fake_chat)
+
             create_resp = client.post(
                 "/sessions",
                 json={
@@ -87,10 +117,15 @@ def test_all_seeded_scenarios_start_cleanly_in_nonstream(monkeypatch):
                 continue
 
             final_text = response.json()["message"]["content"]
-            expected_question = _expected_first_question((scenario.tasks or [])[0])
 
-            if not final_text.startswith("Здравствуйте!"):
+            if not final_text.startswith("Привет!"):
                 failures.append(f"{scenario.slug}: нет корректного приветствия")
+            if expected_role and expected_role not in final_text:
+                failures.append(f"{scenario.slug}: не найдено название роли")
+            if scenario.name not in final_text:
+                failures.append(f"{scenario.slug}: не найдено название сценария")
+            if "Цель интервью" not in final_text:
+                failures.append(f"{scenario.slug}: не найдена цель интервью")
             if expected_question not in final_text:
                 failures.append(f"{scenario.slug}: не найден первый вопрос")
 
@@ -98,31 +133,36 @@ def test_all_seeded_scenarios_start_cleanly_in_nonstream(monkeypatch):
 
 
 def test_all_seeded_scenarios_start_cleanly_in_streaming(monkeypatch):
-    def fake_chat(messages, tools=None, tool_choice=None, temperature=0.2):
-        system_text = "\n".join(str(item.get("content") or "") for item in messages if item.get("role") == "system")
-        assert "одно короткое приветствие" in system_text.lower()
-        assert "объясни всё, что знаешь" not in system_text.lower()
-        return {
-            "choices": [
-                {
-                    "message": {
-                        "role": "assistant",
-                        "content": (
-                            "Привет! Сначала опишу вам весь сценарий интервью, затем расскажу про роль, "
-                            "критерии оценки и только потом когда-нибудь перейду к вопросам."
-                        ),
-                    }
-                }
-            ]
-        }
-
-    monkeypatch.setattr(streaming_module.lm_client, "chat", fake_chat)
-
     with TestClient(main_module.app) as client:
         scenarios = _load_seeded_scenarios()
         failures: list[str] = []
 
         for scenario in scenarios:
+            expected_question = _expected_first_question((scenario.tasks or [])[0])
+            expected_role = _role_name_for_role_id(scenario.role_id)
+
+            def fake_chat(messages, tools=None, tool_choice=None, temperature=0.2, *, _expected_question=expected_question):
+                system_text = "\n".join(str(item.get("content") or "") for item in messages if item.get("role") == "system")
+                assert "роль, сценарий и цель интервью" in system_text.lower()
+                assert tools is None
+                role_name, scenario_name = _extract_names(system_text)
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": (
+                                    f'Привет! Я проведу интервью на роль {role_name} по сценарию "{scenario_name}". '
+                                    "Цель интервью — оценить ваши ответы по заданиям этого сценария.\n\n"
+                                    f"{_expected_question}"
+                                ),
+                            }
+                        }
+                    ]
+                }
+
+            monkeypatch.setattr(streaming_module.lm_client, "chat", fake_chat)
+
             create_resp = client.post(
                 "/sessions",
                 json={
@@ -142,10 +182,15 @@ def test_all_seeded_scenarios_start_cleanly_in_streaming(monkeypatch):
                 continue
 
             final_text = _parse_sse_done_content(response.text)
-            expected_question = _expected_first_question((scenario.tasks or [])[0])
 
             if not final_text.startswith("Привет!"):
                 failures.append(f"{scenario.slug}: нет корректного приветствия")
+            if expected_role and expected_role not in final_text:
+                failures.append(f"{scenario.slug}: не найдено название роли")
+            if scenario.name not in final_text:
+                failures.append(f"{scenario.slug}: не найдено название сценария")
+            if "Цель интервью" not in final_text:
+                failures.append(f"{scenario.slug}: не найдена цель интервью")
             if expected_question not in final_text:
                 failures.append(f"{scenario.slug}: не найден первый вопрос")
 

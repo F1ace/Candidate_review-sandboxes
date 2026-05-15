@@ -6,7 +6,12 @@ from sqlalchemy.orm import Session
 
 from ... import models
 from ...services import sandbox, sql_runner
-from ...services.rag import search_documents
+from ...services.rag import search_document_chunks
+from ...services.theory_rag import (
+    find_candidate_answer_message,
+    get_existing_validation,
+    theory_rag_required,
+)
 from .state import _get_task_by_id
 from .tool_errors import (THEORY_COMMENT_EMPTY, THEORY_COMMENT_TOO_SHORT, THEORY_COMMENT_TRUNCATED, THEORY_COMMENT_TEMPLATE, THEORY_FINAL_TEXTUAL_SCORE, THEORY_FINAL_COMMENTS_REQUIRED, THEORY_FINAL_COMMENTS_TEXTUAL_SCORE,)
 
@@ -233,7 +238,7 @@ def _dispatch_tool_call(session: models.Session, tc: dict[str, Any], db: Session
             return _apply_score(session, args, db)
 
         if name == "rag_search":
-            query = (args.get("query") or "").strip()
+            query = (args.get("query") or args.get("question") or "").strip()
             if not query:
                 return {"ok": False, "error": "query is required"}
 

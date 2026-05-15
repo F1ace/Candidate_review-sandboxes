@@ -1,3 +1,4 @@
+import json
 import uuid
 from datetime import datetime
 from typing import Any, Optional
@@ -14,9 +15,56 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
+from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.types import UserDefinedType
 
 from .database import Base
+
+
+class VectorEmbedding(UserDefinedType):
+    cache_ok = True
+
+    def get_col_spec(self, **kw: Any) -> str:
+        return "vector"
+
+    def bind_processor(self, dialect):
+        def process(value: Any) -> str | None:
+            if value is None:
+                return None
+            if isinstance(value, str):
+                return value
+            return "[" + ",".join(f"{float(item):.12g}" for item in value) + "]"
+
+        return process
+
+    def result_processor(self, dialect, coltype):
+        def process(value: Any) -> list[float] | None:
+            if value is None:
+                return None
+            if isinstance(value, list):
+                return [float(item) for item in value]
+
+            text = str(value).strip()
+            if not text:
+                return []
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                parsed = [part.strip() for part in text.strip("[]").split(",") if part.strip()]
+            return [float(item) for item in parsed]
+
+        return process
+
+
+@compiles(VectorEmbedding, "sqlite")
+def _compile_vector_embedding_sqlite(type_: VectorEmbedding, compiler, **kw: Any) -> str:
+    return "TEXT"
+
+
+@compiles(VectorEmbedding, "postgresql")
+def _compile_vector_embedding_postgresql(type_: VectorEmbedding, compiler, **kw: Any) -> str:
+    return "vector"
 
 
 class Role(Base):
@@ -79,6 +127,7 @@ class DocumentChunk(Base):
     token_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     char_start: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     char_end: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    embedding: Mapped[Optional[list[float]]] = mapped_column(VectorEmbedding())
     meta: Mapped[Optional[dict[str, Any]]] = mapped_column("metadata", JSON, default={})
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 

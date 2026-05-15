@@ -93,6 +93,74 @@ def force_pending_theory_intermediate_score(
     return assistant_msg, tool_calls
 
 
+def _question_text_for_rag_query(task_obj: dict[str, Any], question_index: int) -> str:
+    questions = task_obj.get("questions") or []
+    if question_index < 1 or question_index > len(questions):
+        return ""
+
+    question = questions[question_index - 1]
+    if isinstance(question, dict):
+        for key in ("question", "text", "prompt", "title"):
+            value = question.get(key)
+            if value:
+                return str(value).strip()
+        return str(question).strip()
+    return str(question).strip()
+
+
+def force_pending_theory_rag_search(
+    assistant_msg: dict[str, Any],
+    *,
+    session: models.Session,
+    task_id: str,
+    question_index: int,
+    tool_call_id: str,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    tool_calls = assistant_msg.get("tool_calls") or []
+    query = ""
+
+    if tool_calls:
+        first = tool_calls[0]
+        function = first.get("function") or {}
+        try:
+            args = json.loads(function.get("arguments") or "{}")
+        except Exception:
+            args = {}
+        if isinstance(args, dict):
+            query = str(args.get("query") or args.get("question") or "").strip()
+
+    task_obj = _get_task_by_id(session.scenario, task_id) or {}
+    if not query:
+        query = _question_text_for_rag_query(task_obj, question_index)
+    if not query:
+        query = f"theory task {task_id} question {question_index}"
+
+    forced_tool_calls = [
+        {
+            "id": tool_call_id,
+            "type": "function",
+            "function": {
+                "name": "rag_search",
+                "arguments": json.dumps(
+                    {
+                        "query": query,
+                        "task_id": task_id,
+                        "question_index": question_index,
+                        "top_k": 5,
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        }
+    ]
+
+    fixed_msg = dict(assistant_msg or {})
+    fixed_msg["role"] = "assistant"
+    fixed_msg["content"] = None
+    fixed_msg["tool_calls"] = forced_tool_calls
+    return fixed_msg, forced_tool_calls
+
+
 def force_final_theory_score(
     assistant_msg: dict[str, Any],
     *,

@@ -33,6 +33,7 @@ def test_rag_upload_and_search_indexes_chunks(client, db_session, embeddings_bac
     document = db_session.get(models.Document, payload["id"])
     assert document is not None
     assert len(document.chunks) >= 1
+    assert document.chunks[0].embedding
 
     search_resp = client.post(
         "/rag/search",
@@ -49,7 +50,7 @@ def test_rag_upload_and_search_indexes_chunks(client, db_session, embeddings_bac
     assert "идемпотент" in results[0]["snippet"].lower()
     assert embeddings_backend.document_calls
     assert embeddings_backend.query_calls
-    assert results[0]["metadata"]["retrieval_backend"] == "langchain_inmemory_vectorstore"
+    assert results[0]["metadata"]["retrieval_backend"] == "pgvector"
     assert results[0]["metadata"]["embedding_model"] == "fake-lmstudio-embedding"
 
 
@@ -73,10 +74,10 @@ def test_rag_search_does_not_fallback_when_embeddings_fail(client, db_session, m
     )
     assert upload_resp.status_code == 201
 
-    def fail_embed_documents(texts):
+    def fail_embed_query(text):
         raise RuntimeError("embeddings backend offline")
 
-    monkeypatch.setattr(rag_service.embedding_service, "embed_documents", fail_embed_documents)
+    monkeypatch.setattr(rag_service.embedding_service, "embed_query", fail_embed_query)
 
     with pytest.raises(RuntimeError, match="embeddings backend offline"):
         rag_service.search_document_chunks(

@@ -91,7 +91,7 @@ def _build_system_prompt(session: models.Session, rag_available: bool) -> str:
         "Правила:\n"
         "- Иди строго по порядку сценария и продолжай с текущей задачи.\n"
         "- Если вступление уже было показано, не повторяй его.\n"
-        "- Для первого ответа: одно короткое приветствие и сразу первый вопрос текущего задания. Не пересказывай весь сценарий интервью.\n"
+        "- Для первого ответа: начни с приветствия, объясни всё, что знаешь, роль, сценарий и цель интервью, а после задай сразу первый вопрос текущего задания.\n"
         "- Theory: задавай по одному вопросу в формате 'Вопрос i/N: ...'.\n"
         "- Theory: после каждого ответа сохраняй ровно один промежуточный score_task с is_final=false и question_index=i.\n"
         "- Theory: если доступен RAG, сначала вызывай rag_search, затем промежуточный score_task.\n"
@@ -139,19 +139,91 @@ def _strip_intro(text: str, intro_done: bool) -> str:
     return text
 
 
-_FIRST_TURN_GREETING_RE = re.compile(r"^\s*здравствуйте", re.IGNORECASE)
+_FIRST_TURN_GREETING_RE = re.compile(
+    r"^\s*(?:\*\*)?\s*(?:здравствуйте|привет|добрый\s+день|добрый\s+вечер)\b",
+    re.IGNORECASE,
+)
 _THEORY_QUESTION_RE = re.compile(r"(?im)^\s*\*?\*?\s*вопрос\s+\d+\s*/\s*\d+\s*:")
 
 
 def _ensure_first_model_greeting(text: str, session: models.Session) -> str:
     cleaned = _strip_think(text or "").strip()
-    if cleaned and _FIRST_TURN_GREETING_RE.search(cleaned):
+    if cleaned:
         return cleaned
 
     role_name = _trim_prompt_text(session.role.name, 60)
     scenario_name = _trim_prompt_text(session.scenario.name, 80)
-    intro = f"Здравствуйте! Проведу для вас интервью на роль {role_name} по сценарию \"{scenario_name}\"."
+    intro = (
+        f"Здравствуйте! Проведу для вас интервью на роль {role_name} "
+        f"по сценарию \"{scenario_name}\". Сначала кратко обозначу роль, сценарий "
+        "и цель интервью, а затем сразу перейду к первому заданию."
+    )
     return f"{intro}\n\n{cleaned}"
+
+
+def _first_turn_has_task_prompt(text: str, session: models.Session) -> bool:
+    cleaned = _strip_think(text or "").strip()
+    if not cleaned:
+        return False
+
+    first_task_prompt = _build_first_task_prompt(session)
+    if not first_task_prompt:
+        return True
+
+    tasks = session.scenario.tasks or []
+    current_task_id = session.current_task_id or (tasks[0].get("id") if tasks else "")
+    current_task = next((task for task in tasks if task.get("id") == current_task_id), None)
+    task_type = (current_task or {}).get("type")
+
+    if task_type == "theory":
+        return _THEORY_QUESTION_RE.search(cleaned) is not None
+    return first_task_prompt in cleaned
+
+
+def _first_turn_has_required_intro(text: str, session: models.Session) -> bool:
+    cleaned = _strip_think(text or "").strip()
+    if not cleaned:
+        return False
+
+    lowered = cleaned.lower()
+    role_name = _trim_prompt_text(session.role.name, 60).lower()
+    scenario_name = _trim_prompt_text(session.scenario.name, 80).lower()
+
+    has_greeting = _FIRST_TURN_GREETING_RE.search(cleaned) is not None
+    has_role = bool(role_name) and role_name in lowered
+    has_scenario = bool(scenario_name) and scenario_name in lowered
+    has_goal = "цель интервью" in lowered or ("цель" in lowered and "интервью" in lowered)
+
+    return has_greeting and has_role and has_scenario and has_goal and _first_turn_has_task_prompt(cleaned, session)
+
+
+def _build_first_turn_opening_repair_message(session: models.Session) -> str:
+    role_name = _trim_prompt_text(session.role.name, 60)
+    scenario_name = _trim_prompt_text(session.scenario.name, 80)
+    first_task_prompt = _build_first_task_prompt(session)
+
+    if first_task_prompt:
+        task_requirement = (
+            "После краткого вступления сразу выведи первый шаг текущего задания отдельным абзацем.\n"
+            f"Используй точную формулировку:\n{first_task_prompt}"
+        )
+    else:
+        task_requirement = (
+            "После краткого вступления сразу переходи к первому шагу текущего задания без перечисления будущих этапов."
+        )
+
+    return (
+        "Исправь предыдущий первый ответ модели и перепиши его целиком.\n"
+        "Верни одно обычное сообщение без tools, JSON и служебных маркеров.\n"
+        "Обязательные требования:\n"
+        "- начни сообщение с приветствия;\n"
+        f"- явно назови роль: {role_name};\n"
+        f"- явно назови сценарий: {scenario_name};\n"
+        "- явно сформулируй цель интервью, используя слова 'цель интервью';\n"
+        "- не ограничивайся фразой вроде 'Привет! Рада встрече.';\n"
+        "- не пересказывай весь сценарий и не перечисляй все будущие шаги.\n"
+        f"{task_requirement}"
+    )
 
 
 def _build_first_task_prompt(session: models.Session) -> str:

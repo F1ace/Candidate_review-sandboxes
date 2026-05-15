@@ -14,9 +14,12 @@ from .dispatch import (
 )
 from .practice import _score_feedback
 from .prompting import (
+    _build_first_turn_opening_repair_message,
     _build_system_prompt,
+    _ensure_first_model_greeting,
     _ensure_first_model_opening,
     _extract_inline_tool_call,
+    _first_turn_has_required_intro,
     _normalize_lm_messages,
     _strip_intro,
 )
@@ -28,7 +31,7 @@ from .tool_call_utils import (
     strip_trailing_tool_dump as _strip_trailing_tool_dump,
 )
 from .tools import theory_tools, coding_tools, sql_tools, rag_search_only_tools
-from .theory_retry import (build_theory_comment_retry_message, build_final_theory_comment_retry_message, force_pending_theory_intermediate_score, force_final_theory_score, has_unscored_answer_for_current_theory_question, resolve_current_task_id, score_task_only_tools, is_retryable_final_theory_score_error, is_retryable_theory_score_error,)
+from .theory_retry import (build_theory_comment_retry_message, build_final_theory_comment_retry_message, force_pending_theory_intermediate_score, force_pending_theory_rag_search, force_final_theory_score, has_unscored_answer_for_current_theory_question, resolve_current_task_id, score_task_only_tools, is_retryable_final_theory_score_error, is_retryable_theory_score_error,)
 from .theory_contracts import (build_theory_final_message_contract, build_theory_final_message_prompt, build_theory_final_message_repair_prompt, finalize_theory_final_message, sanitize_theory_final_message, theory_final_message_has_wrong_score, theory_final_message_too_generic,)
 
 def _human_tool_error(result: dict) -> str:
@@ -254,15 +257,16 @@ def call_model(session_id: str, db: Session):
     tools_for_turn = _tools_for_current_task(current_task, rag_available)
 
     has_model_messages = any(m.sender == "model" for m in history_db)
+    is_initial_opening_turn = not has_model_messages
 
-    if not has_model_messages:
+    if is_initial_opening_turn:
         messages.append({
             "role": "system",
             "content": (
                 "Это первый ответ модели в этой сессии.\n"
-                "Нужно дать одно короткое приветствие, "
-                "а затем сразу задать первый вопрос первого задания.\n"
-                "Не пересказывай весь сценарий интервью и не пропускай вопрос."
+                "Нужно начать с приветствия, кратко обозначить роль, сценарий и цель интервью, "
+                "а затем сразу перейти к первому шагу текущего задания.\n"
+                "Не пересказывай весь сценарий интервью и не пропускай первый вопрос или первое задание."
             ),
         })
 
@@ -297,7 +301,9 @@ def call_model(session_id: str, db: Session):
             })
 
     try:
-        if needs_intermediate_score and current_task_id and pending_question_index and current_task_type == "theory":
+        if is_initial_opening_turn:
+            first_resp = _chat_with_normalized_messages(request_messages, tools=None)
+        elif needs_intermediate_score and current_task_id and pending_question_index and current_task_type == "theory":
             if rag_available:
                 first_resp = _chat_with_normalized_messages(
                     request_messages,
@@ -318,18 +324,78 @@ def call_model(session_id: str, db: Session):
     assistant_msg = first_resp["choices"][0]["message"]
     tool_calls = assistant_msg.get("tool_calls")
 
+    if is_initial_opening_turn and tool_calls:
+        assistant_msg = dict(assistant_msg)
+        assistant_msg.pop("tool_calls", None)
+        tool_calls = None
+
+    if is_initial_opening_turn and not _first_turn_has_required_intro(assistant_msg.get("content") or "", session):
+        repair_messages = list(request_messages)
+        if assistant_msg.get("content"):
+            repair_messages.append({
+                "role": "assistant",
+                "content": assistant_msg.get("content") or "",
+            })
+        repair_messages.append({
+            "role": "system",
+            "content": _build_first_turn_opening_repair_message(session),
+        })
+        try:
+            repair_resp = _chat_with_normalized_messages(repair_messages, tools=None)
+            repaired_msg = repair_resp["choices"][0]["message"]
+            repaired_tool_calls = repaired_msg.get("tool_calls")
+            if repaired_tool_calls:
+                repaired_msg = dict(repaired_msg)
+                repaired_msg.pop("tool_calls", None)
+            if (repaired_msg.get("content") or "").strip():
+                assistant_msg = repaired_msg
+                tool_calls = None
+        except Exception:
+            pass
+
     # Fallback: если tool_calls нет, но модель напечатала tool-call текстом
     assistant_msg, tool_calls = _coerce_inline_tool_call(
         assistant_msg,
-        allowed_tool_names=_tool_names(
-            rag_search_only_tools() if (needs_intermediate_score and current_task_id and pending_question_index and current_task_type == "theory" and rag_available)
-            else score_task_only_tools() if (needs_intermediate_score and current_task_id and pending_question_index and current_task_type == "theory" and not rag_available)
-            else tools_for_turn
+        allowed_tool_names=(
+            set()
+            if is_initial_opening_turn
+            else _tool_names(
+                rag_search_only_tools() if (needs_intermediate_score and current_task_id and pending_question_index and current_task_type == "theory" and rag_available)
+                else score_task_only_tools() if (needs_intermediate_score and current_task_id and pending_question_index and current_task_type == "theory" and not rag_available)
+                else tools_for_turn
+            )
         ),
         current_task_type=current_task_type,
         tool_call_id="inline_toolcall",
     )
-    if needs_intermediate_score and current_task_id and pending_question_index and current_task_type == "theory" and tool_calls:
+    if (
+        not is_initial_opening_turn
+        and needs_intermediate_score
+        and current_task_id
+        and pending_question_index
+        and current_task_type == "theory"
+        and rag_available
+    ):
+        first_tool_name = ""
+        if tool_calls:
+            first_function = tool_calls[0].get("function") or {}
+            first_tool_name = str(first_function.get("name") or "").split(".")[-1]
+        if first_tool_name != "rag_search":
+            assistant_msg, tool_calls = force_pending_theory_rag_search(
+                assistant_msg,
+                session=session,
+                task_id=current_task_id,
+                question_index=pending_question_index,
+                tool_call_id="forced_rag_search_before_theory_score",
+            )
+    elif (
+        not is_initial_opening_turn
+        and needs_intermediate_score
+        and current_task_id
+        and pending_question_index
+        and current_task_type == "theory"
+        and tool_calls
+    ):
         assistant_msg, tool_calls = force_pending_theory_intermediate_score(
             assistant_msg,
             task_id=current_task_id,
@@ -1076,7 +1142,10 @@ def call_model(session_id: str, db: Session):
             theory_contract = build_theory_final_message_contract(task_obj, last_score_result)
             if theory_contract:
                 final_text = finalize_theory_final_message(final_text, theory_contract)
-    if not has_model_messages:
+    if is_initial_opening_turn:
+        if _looks_like_tool_dump(final_text):
+            final_text = ""
+        final_text = _ensure_first_model_greeting(final_text, session)
         final_text = _ensure_first_model_opening(final_text, session)
     final_text = _strip_intro(final_text, has_model_messages).strip()
 

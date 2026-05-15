@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from .. import models
 from ..config import settings
 from .object_storage import storage_service
+from .rag_embeddings import embedding_service
 
 
 TEXT_EXTENSIONS = {
@@ -154,7 +155,11 @@ def ingest_document_bytes(
     db.flush()
 
     chunks = chunk_text(text)
-    for chunk in chunks:
+    embeddings = embedding_service.embed_documents([chunk["content"] for chunk in chunks]) if chunks else []
+    if len(embeddings) != len(chunks):
+        raise RuntimeError("Embedding backend returned an unexpected number of vectors")
+
+    for chunk, embedding in zip(chunks, embeddings):
         db.add(
             models.DocumentChunk(
                 document_id=document.id,
@@ -164,7 +169,12 @@ def ingest_document_bytes(
                 token_count=chunk["token_count"],
                 char_start=chunk["char_start"],
                 char_end=chunk["char_end"],
-                meta={"source_filename": filename},
+                embedding=embedding,
+                meta={
+                    "source_filename": filename,
+                    "retrieval_backend": embedding_service.backend_name,
+                    "embedding_model": embedding_service.model_name,
+                },
             )
         )
 

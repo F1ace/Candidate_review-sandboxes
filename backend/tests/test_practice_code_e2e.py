@@ -865,3 +865,132 @@ def test_practice_code_recovers_structured_reply_after_rag_theory_context_leaks_
     assert "Качество кода:" in payload["reply"]
     assert "Сложность и эффективность:" in payload["reply"]
     assert "Что можно улучшить:" in payload["reply"]
+def test_practice_code_after_theory_recovers_missing_score_task_and_keeps_model_final_reply(
+    client,
+    db_session,
+    monkeypatch,
+):
+    session = _create_code_session_after_rag_theory(
+        db_session,
+        slug="be-practice-theory-missing-score-task",
+    )
+    state = {
+        "isolated_comment_calls": 0,
+        "isolated_final_calls": 0,
+    }
+
+    def fake_chat(messages, tools=None, tool_choice=None):
+        tool_names = {(tool.get("function") or {}).get("name") for tool in tools or []}
+        system_text = "\n".join(str(item.get("content") or "") for item in messages if item.get("role") == "system")
+
+        if tool_names == {"run_code"}:
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [_run_code_tool_call()],
+                        }
+                    }
+                ]
+            }
+
+        if tool_names == {"score_task"}:
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "Практическая проверка завершена.",
+                        }
+                    }
+                ]
+            }
+
+        if "PRACTICE_SCORE_COMMENT_RECOVERY" in system_text:
+            state["isolated_comment_calls"] += 1
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": VALID_SCORE_COMMENT,
+                        }
+                    }
+                ]
+            }
+
+        if "PRACTICE_FINAL_REPLY_RECOVERY" in system_text:
+            state["isolated_final_calls"] += 1
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": (
+                                "Практическая проверка завершена.\n\n"
+                                "Корректность: Решение прошло sandbox-проверки и на текущем наборе кейсов работает корректно.\n"
+                                "Качество кода: Код читается легко и не выглядит перегруженным, хотя пару мест можно сделать чуть более самодокументируемыми.\n"
+                                "Сложность и эффективность: Для этой задачи выбранная реализация выглядит достаточно эффективной и не вызывает заметных рисков.\n"
+                                "Что можно улучшить: Добавить ещё пару собственных тестов на крайние случаи и чуть яснее назвать промежуточные сущности."
+                            ),
+                        }
+                    }
+                ]
+            }
+
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "Практическая проверка завершена.",
+                    }
+                }
+            ]
+        }
+
+    def fake_dispatch_tool_call(session_obj, tc, db):
+        name = (tc.get("function") or {}).get("name")
+        args = json.loads(((tc.get("function") or {}).get("arguments") or "{}"))
+        if name == "run_code":
+            return _run_code_result(success=True, tests_passed=4)
+
+        assert name == "score_task"
+        comment = str(args.get("comment") or "")
+        assert "Корректность:" in comment
+        assert "Качество кода:" in comment
+        assert "Сложность и эффективность:" in comment
+        assert "Что можно улучшить:" in comment
+        return {
+            "ok": True,
+            "task_id": "C1",
+            "points": float(args.get("points") or 0),
+            "comment": comment,
+            "is_final": True,
+        }
+
+    monkeypatch.setattr(practice_module.lm_client, "chat", fake_chat)
+    monkeypatch.setattr(practice_module, "_dispatch_tool_call", fake_dispatch_tool_call)
+
+    response = client.post(
+        f"/sessions/{session.id}/practice/code",
+        json={"task_id": "C1", "language": "python", "code": "def two_sum(nums, target): return [0, 1]"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["tool_results"][0]["name"] == "run_code"
+    assert payload["tool_results"][-1]["name"] == "score_task"
+    assert payload["tool_results"][-1]["result"]["ok"] is True
+    assert payload["reply_source"] == "model"
+    assert state["isolated_comment_calls"] >= 1
+    assert state["isolated_final_calls"] >= 1
+    assert payload["reply"].strip() != "Практическая проверка завершена."
+    assert "Корректность:" in payload["reply"]
+    assert "Качество кода:" in payload["reply"]
+    assert "Сложность и эффективность:" in payload["reply"]
+    assert "Что можно улучшить:" in payload["reply"]
+    assert "Балл:" not in payload["reply"]
+    assert "Теоретический блок завершён" not in payload["reply"]

@@ -324,8 +324,22 @@ const theoryCompleted = useMemo(() => {
   return theoryTasks.every((t) => sessionScores[t.id] !== undefined);
 }, [theoryTasks, sessionScores]);
 
-  const scoredTasksCount = Object.keys(sessionScores).length;
-  const canExportReport = Boolean(sessionId) && (messages.length > 0 || scoredTasksCount > 0);
+  const totalTasksCount = orderedTasks.length;
+  const scoredTasksCount = useMemo(
+    () =>
+      orderedTasks.filter((task) => {
+        const hasPersistedScore = Object.prototype.hasOwnProperty.call(sessionScores, task.id);
+        const localPracticeScore = practiceTaskState[task.id]?.scoreResult;
+        const hasLocalPracticeScore =
+          task.type !== "theory" &&
+          typeof localPracticeScore?.points === "number" &&
+          Number.isFinite(localPracticeScore.points);
+
+        return hasPersistedScore || hasLocalPracticeScore;
+      }).length,
+    [orderedTasks, practiceTaskState, sessionScores],
+  );
+  const canExportReport = Boolean(sessionId) && totalTasksCount > 0 && scoredTasksCount === totalTasksCount;
 
   const firstPracticeIndex = useMemo(() => {
   // индекс первого задания НЕ theory (coding/sql)
@@ -629,6 +643,7 @@ const theoryCompleted = useMemo(() => {
     setStatus("Сессия активна");
     setView("session");
     setCurrentTaskIndex(0);
+    setSessionScores({});
     setPracticeTaskState({});
 
     await streamModel(newId);
@@ -695,6 +710,12 @@ const theoryCompleted = useMemo(() => {
       const runCodeToolResult = isRecord(runCodeTool?.result) ? runCodeTool.result : null;
       const nestedRunCodeResult = runCodeToolResult?.result;
       const scorePayload = getScoreResultPayload(scoreTool?.result);
+      if (scorePayload && typeof scorePayload.points === "number" && Number.isFinite(scorePayload.points)) {
+        setSessionScores((prev) => ({
+          ...prev,
+          [scorePayload.task_id || task.id]: scorePayload.points,
+        }));
+      }
 
       let nextRunResult: SandboxRunResult | null = null;
       let nextExecutionLog: string | null = null;
@@ -772,6 +793,12 @@ const theoryCompleted = useMemo(() => {
 
       const normalizedSqlResult = getSqlRunResultPayload(runSqlTool?.result);
       const scorePayload = getScoreResultPayload(scoreTool?.result);
+      if (scorePayload && typeof scorePayload.points === "number" && Number.isFinite(scorePayload.points)) {
+        setSessionScores((prev) => ({
+          ...prev,
+          [scorePayload.task_id || task.id]: scorePayload.points,
+        }));
+      }
 
       setIsRunningTests(false);
       setIsScoring(true);
@@ -991,6 +1018,10 @@ const goNextTask = () => {
       setStatus("Сначала запустите интервью");
       return;
     }
+    if (!canExportReport) {
+      setStatus(`PDF-отчёт будет доступен после оценки всех блоков (${scoredTasksCount}/${totalTasksCount})`);
+      return;
+    }
 
     const reportWindow = window.open("", "_blank");
     if (!reportWindow) {
@@ -1035,11 +1066,11 @@ const goNextTask = () => {
             </button>
             )}
             <button
-              className="ghost"
+              className="primary"
               data-testid="admin-toggle"
               onClick={() => setView(view === "admin" ? "landing" : "admin")}
             >
-              {view === "admin" ? "Вернуться" : "Добавить документ"}
+              {view === "admin" ? "Вернуться" : "Открыть панель администратора"}
             </button>
             {status && <span className="pill">{status}</span>}
           </div>
@@ -1050,8 +1081,11 @@ const goNextTask = () => {
           <p className="muted">{selectedScenarioObj?.name || "Выберите сценарий"}</p>
           {view === "session" && (
             <div className="status-card-actions">
-              <p className="muted">Оценено блоков: {scoredTasksCount}/{orderedTasks.length || 0}</p>
+              <p className="muted" data-testid="scored-blocks-counter">
+                Оценено блоков: {scoredTasksCount}/{totalTasksCount}
+              </p>
               <button
+                data-testid="export-report-button"
                 className="primary status-card-button"
                 onClick={exportInterviewReport}
                 disabled={!canExportReport || isExportingReport}

@@ -372,33 +372,68 @@ def _practice_score_comment_prompt(
     )
 
 
+def _practice_isolated_recovery_messages(*, mode: str, prompt: str) -> list[dict[str, Any]]:
+    system_prompt = (
+        f"{mode}.\n"
+        "Изолированный recovery-контекст для coding-review.\n"
+        "Полностью игнорируй историю интервью, theory-блок, прошлые ошибочные ответы модели, "
+        "tool-dump и служебные сообщения.\n"
+        "Опирайся только на запрос пользователя ниже.\n"
+        "Нельзя вызывать инструменты, нельзя писать JSON, schema, raw tool result или служебные поля.\n"
+        "Нужно вернуть только итоговый полезный текст в требуемом формате."
+    )
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": prompt},
+    ]
+
+
 def _request_model_score_comment(
     state: CodeWorkflowState,
     *,
-    messages: list[dict[str, Any]],
     chat: Callable[..., dict[str, Any]],
     draft_feedback: str | None = None,
 ) -> str | None:
     for attempt in range(3):
-        messages.append(
-            {
-                "role": "user",
-                "content": _practice_score_comment_prompt(
-                    state,
-                    draft_feedback=draft_feedback,
-                    strict_retry=attempt > 0,
-                ),
-            }
+        recovery_messages = _practice_isolated_recovery_messages(
+            mode="PRACTICE_SCORE_COMMENT_RECOVERY",
+            prompt=_practice_score_comment_prompt(
+                state,
+                draft_feedback=draft_feedback,
+                strict_retry=attempt > 0,
+            ),
         )
-        resp = chat(messages, tools=[])
+        resp = chat(recovery_messages, tools=[])
         assistant_msg = resp["choices"][0]["message"]
-        messages.append(assistant_msg)
 
         comment = _extract_structured_practice_comment(assistant_msg.get("content") or "")
         if comment:
             return comment
 
     return None
+
+
+def _request_model_final_reply_isolated(
+    state: CodeWorkflowState,
+    *,
+    chat: Callable[..., dict[str, Any]],
+) -> dict[str, Any] | None:
+    last_msg: dict[str, Any] | None = None
+    for attempt in range(3):
+        recovery_messages = _practice_isolated_recovery_messages(
+            mode="PRACTICE_FINAL_REPLY_RECOVERY",
+            prompt=_practice_final_reply_prompt(
+                state,
+                strict_retry=attempt > 0,
+            ),
+        )
+        resp = chat(recovery_messages, tools=[])
+        assistant_msg = resp["choices"][0]["message"]
+        last_msg = assistant_msg
+        candidate_content = (assistant_msg.get("content") or "").strip()
+        if not _practice_reply_needs_fallback(candidate_content):
+            return assistant_msg
+    return last_msg
 
 def _normalize_model_practice_reply(content: str) -> str:
     lines = str(content or "").splitlines()
@@ -672,7 +707,11 @@ def run_practice_code_review(
         for _ in range(max_iters):
             allowed_tools = state.allowed_tools()
             toolset = _tools_subset(tools, allowed_tools)
-            resp = chat(messages, tools=toolset)
+            resp = chat(
+                messages,
+                tools=toolset,
+                tool_choice="required" if toolset else None,
+            )
 
             assistant_msg = resp["choices"][0]["message"]
             assistant_msg, tool_calls = _coerce_inline_tool_call(
@@ -939,7 +978,11 @@ def run_practice_code_review(
 
             for attempt, prompt in enumerate(recovery_prompts):
                 messages.append({"role": "user", "content": prompt})
-                resp = chat(messages, tools=_tools_subset(tools, ["score_task"]))
+                resp = chat(
+                    messages,
+                    tools=_tools_subset(tools, ["score_task"]),
+                    tool_choice="required",
+                )
                 assistant_msg = resp["choices"][0]["message"]
                 assistant_msg, tool_calls = _coerce_inline_tool_call(
                     assistant_msg,
@@ -1051,7 +1094,6 @@ def run_practice_code_review(
         ):
             generated_comment = _request_model_score_comment(
                 state,
-                messages=messages,
                 chat=chat,
                 draft_feedback=last_score_feedback_draft,
             )
@@ -1130,6 +1172,14 @@ def run_practice_code_review(
                 if not _practice_reply_needs_fallback(candidate_content):
                     break
                 final_attempts += 1
+
+            if final_msg is not None and _practice_reply_needs_fallback((final_msg.get("content") or "").strip()):
+                isolated_final_msg = _request_model_final_reply_isolated(
+                    state,
+                    chat=chat,
+                )
+                if isolated_final_msg is not None:
+                    final_msg = isolated_final_msg
 
         if (
             final_msg is None

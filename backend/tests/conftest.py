@@ -43,7 +43,7 @@ class FakeStorage:
 class FakeEmbeddingService:
     def __init__(self) -> None:
         self.model_name = "fake-lmstudio-embedding"
-        self.backend_name = "langchain_inmemory_vectorstore"
+        self.backend_name = "pgvector"
         self.document_calls: list[list[str]] = []
         self.query_calls: list[str] = []
 
@@ -106,6 +106,7 @@ def embeddings_backend(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureR
     fake_embeddings = FakeEmbeddingService()
     monkeypatch.setattr(rag_embeddings, "embedding_service", fake_embeddings)
     monkeypatch.setattr(rag_service, "embedding_service", fake_embeddings)
+    monkeypatch.setattr(rag_ingestion, "embedding_service", fake_embeddings)
     yield fake_embeddings
 
 

@@ -39,6 +39,205 @@ def _create_corpus_with_document(client) -> int:
     return corpus_id
 
 
+def test_streaming_theory_rag_forces_search_when_model_skips_to_score_task(
+    client,
+    db_session,
+    theory_scenario_factory,
+    embeddings_backend,
+    monkeypatch,
+):
+    corpus_id = _create_corpus_with_document(client)
+    scenario = theory_scenario_factory(rag_corpus_id=corpus_id)
+
+    session = models.Session(
+        scenario_id=scenario.id,
+        role_id=scenario.role_id,
+        state="active",
+        current_task_id="T-DOCS",
+    )
+    db_session.add(session)
+    db_session.commit()
+    db_session.refresh(session)
+
+    db_session.add(
+        models.Message(
+            session_id=session.id,
+            sender="model",
+            text="**Вопрос 1/1:** Что такое идемпотентность и как она связана с POST?",
+            task_id="T-DOCS",
+        )
+    )
+    db_session.add(
+        models.Message(
+            session_id=session.id,
+            sender="candidate",
+            text=(
+                "Идемпотентность означает, что повтор операции с теми же входными данными "
+                "не меняет итог после первого успешного применения. POST обычно не идемпотентен."
+            ),
+            task_id="T-DOCS",
+        )
+    )
+    db_session.commit()
+
+    state = {"tool_sequences": [], "summary_calls": 0}
+
+    def score_tool_call(points: int, comment: str, *, is_final: bool, comments: list[str] | None = None) -> dict:
+        args = {
+            "task_id": "T-DOCS",
+            "points": points,
+            "comment": comment,
+            "is_final": is_final,
+            "question_index": None if is_final else 1,
+        }
+        if comments is not None:
+            args["comments"] = comments
+        return {
+            "id": "score_task_call",
+            "type": "function",
+            "function": {
+                "name": "score_task",
+                "arguments": json.dumps(args, ensure_ascii=False),
+            },
+        }
+
+    def fake_chat(messages, tools=None, tool_choice=None, temperature=0.2):
+        tool_names = {
+            (tool.get("function") or {}).get("name")
+            for tool in (tools or [])
+            if (tool.get("function") or {}).get("name")
+        }
+
+        if tools:
+            state["tool_sequences"].append(tool_names)
+            if tool_names == {"rag_search"}:
+                # LM Studio иногда игнорирует tool_choice и пытается сразу оценить.
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "tool_calls": [
+                                    score_tool_call(
+                                        7,
+                                        "Ответ в целом верный, но сначала должна быть проверка по документам.",
+                                        is_final=False,
+                                    )
+                                ],
+                            }
+                        }
+                    ]
+                }
+
+            assert tool_names == {"score_task"}
+            system_text = "\n".join(
+                str(item.get("content") or "") for item in messages if item.get("role") == "system"
+            )
+            if "Все промежуточные оценки theory-блока уже сохранены" in system_text:
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "tool_calls": [
+                                    score_tool_call(
+                                        6,
+                                        (
+                                            "Кандидат понимает базовую идею идемпотентности и корректно связывает её с POST. "
+                                            "Для более сильного результата не хватило точного разделения HTTP-семантики и поведения API."
+                                        ),
+                                        is_final=True,
+                                        comments=[
+                                            (
+                                                "Кандидат верно описал смысл идемпотентности и корректно отметил обычную семантику POST, "
+                                                "но не раскрыл границы свойства метода и реализации endpoint."
+                                            )
+                                        ],
+                                    )
+                                ],
+                            }
+                        }
+                    ]
+                }
+
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "tool_calls": [
+                                score_tool_call(
+                                    6,
+                                    (
+                                        "Ответ подтверждается документами сценария и корректно объясняет базовый смысл идемпотентности. "
+                                        "Связь с POST указана верно, но формулировку можно сделать точнее."
+                                    ),
+                                    is_final=False,
+                                )
+                            ],
+                        }
+                    }
+                ]
+            }
+
+        state["summary_calls"] += 1
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": (
+                            "**Итоги теоретической части**\n\n"
+                            "Теоретический блок завершён: базовое понимание есть, детализация требует усиления.\n\n"
+                            "- **Идемпотентность и POST:** кандидат верно описал основу, но не разделил метод и реализацию API.\n\n"
+                            "**Сильные стороны:**\n- Понимает базовую HTTP-семантику.\n\n"
+                            "**Зоны роста:**\n- Точнее раскрывать границы идемпотентности.\n\n"
+                            "**Итоговая оценка по теоретическому блоку:** 6/10."
+                        ),
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(streaming_module.lm_client, "chat", fake_chat)
+
+    response = client.get(f"/sessions/{session.id}/lm/chat-stream")
+    assert response.status_code == 200
+    final_text = _parse_sse_done_content(response.text)
+
+    assert "**Итоговая оценка по теоретическому блоку:** 6/10." in final_text
+    assert state["tool_sequences"] == [{"rag_search"}, {"score_task"}, {"score_task"}]
+    assert embeddings_backend.document_calls
+    assert embeddings_backend.query_calls
+
+    validations = (
+        db_session.query(models.TheoryFactValidation)
+        .filter_by(session_id=session.id, task_id="T-DOCS", question_index=1)
+        .all()
+    )
+    assert len(validations) == 1
+    assert validations[0].result_count >= 1
+
+    tool_messages = (
+        db_session.query(models.Message)
+        .filter_by(session_id=session.id, sender="tool")
+        .order_by(models.Message.created_at.asc(), models.Message.id.asc())
+        .all()
+    )
+    assert tool_messages[0].text.startswith("rag_search -> {'ok': True")
+    assert all("theory_rag_validation_required" not in (message.text or "") for message in tool_messages)
+
+    scores = (
+        db_session.query(models.Score)
+        .filter_by(session_id=session.id, task_id="T-DOCS")
+        .order_by(models.Score.created_at.asc(), models.Score.id.asc())
+        .all()
+    )
+    assert len(scores) == 2
+    assert scores[0].is_final is False
+    assert scores[1].is_final is True
+
+
 def test_streaming_theory_flow_uses_contract_repair_and_final_points(
     client,
     db_session,
@@ -234,7 +433,7 @@ def test_streaming_theory_flow_uses_contract_repair_and_final_points(
     assert len(validations) == 1
     assert validations[0].result_count >= 1
     assert "POST" in json.dumps(validations[0].evidence, ensure_ascii=False)
-    assert validations[0].evidence[0]["metadata"]["retrieval_backend"] == "langchain_inmemory_vectorstore"
+    assert validations[0].evidence[0]["metadata"]["retrieval_backend"] == "pgvector"
     assert validations[0].evidence[0]["metadata"]["embedding_model"] == "fake-lmstudio-embedding"
     assert embeddings_backend.document_calls
     assert embeddings_backend.query_calls

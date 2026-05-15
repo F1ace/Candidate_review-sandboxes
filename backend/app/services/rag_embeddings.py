@@ -18,7 +18,7 @@ class LMStudioEmbeddingService:
 
     @property
     def backend_name(self) -> str:
-        return "langchain_inmemory_vectorstore"
+        return "pgvector"
 
     @cached_property
     def _client(self) -> OpenAIEmbeddings:

@@ -123,7 +123,10 @@ describe("Admin materials UI", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(await screen.findByTestId("admin-toggle"));
+    const adminToggle = await screen.findByTestId("admin-toggle");
+    expect(adminToggle).toHaveClass("primary");
+    await user.click(adminToggle);
+    expect(adminToggle).toHaveClass("primary");
     await user.type(await screen.findByTestId("material-name-input"), "API handbook");
     await user.click(screen.getByTestId("create-material-button"));
 
@@ -485,6 +488,10 @@ describe("Practice feedback UI", () => {
     await user.click(screen.getByTestId("start-session-button"));
     await user.click(await screen.findByTestId("practice-mode-toggle"));
 
+    const reportButton = await screen.findByTestId("export-report-button");
+    expect(screen.getByTestId("scored-blocks-counter")).toHaveTextContent("Оценено блоков: 0/1");
+    expect(reportButton).toBeDisabled();
+
     const editor = await screen.findByTestId("coding-draft-input");
     fireEvent.change(editor, { target: { value: "def two_sum(nums, target): return [0, 1]" } });
     await user.click(screen.getByTestId("review-code-button"));
@@ -493,6 +500,8 @@ describe("Practice feedback UI", () => {
     expect(screen.getByText(/Оценка:/)).toBeInTheDocument();
     expect(screen.queryByText(/Решение прошло все проверки песочницы/)).not.toBeInTheDocument();
     expect(screen.getAllByText(/Оценка:/)).toHaveLength(1);
+    expect(screen.getByTestId("scored-blocks-counter")).toHaveTextContent("Оценено блоков: 1/1");
+    expect(reportButton).not.toBeDisabled();
   });
 
   it("uses the last successful score_task result so the score stays visible after retries", async () => {
