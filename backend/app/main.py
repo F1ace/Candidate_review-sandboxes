@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from pathlib import Path
 
@@ -817,6 +817,6 @@ def lm_ping() -> dict:
     try:
         resp = lm_client.ping()
         return {"status": "ok", "model": resp.get("model", settings.lm_model)}
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise HTTPException(status_code=500, detail=f"LM Studio not reachable: {exc}") from exc
 

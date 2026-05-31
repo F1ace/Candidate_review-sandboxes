@@ -1,6 +1,5 @@
 ﻿import json
 from typing import Any
-import re
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -31,7 +30,7 @@ from .tool_call_utils import (
     strip_trailing_tool_dump as _strip_trailing_tool_dump,
 )
 from .tools import theory_tools, coding_tools, sql_tools, rag_search_only_tools
-from .theory_retry import (build_theory_comment_retry_message, build_final_theory_comment_retry_message, force_pending_theory_intermediate_score, force_pending_theory_rag_search, force_final_theory_score, has_unscored_answer_for_current_theory_question, resolve_current_task_id, score_task_only_tools, is_retryable_final_theory_score_error, is_retryable_theory_score_error,)
+from .theory_retry import (build_theory_comment_retry_message, build_final_theory_comment_retry_message, force_pending_theory_intermediate_score, force_pending_theory_rag_search, force_final_theory_score, has_unscored_answer_for_current_theory_question, score_task_only_tools, is_retryable_final_theory_score_error, is_retryable_theory_score_error,)
 from .theory_contracts import (build_theory_final_message_contract, build_theory_final_message_prompt, build_theory_final_message_repair_prompt, finalize_theory_final_message, sanitize_theory_final_message, theory_final_message_has_wrong_score, theory_final_message_too_generic,)
 
 def _human_tool_error(result: dict) -> str:
@@ -70,84 +69,6 @@ def _should_allow_final_theory_score_tool(
     missing_questions = aggregated.get("missing_questions") or []
 
     return len(missing_questions) == 0
-
-_SCORE_10_RE = re.compile(r"(\d+)\s*/\s*10|\b(\d+)\s+из\s+10\b", re.IGNORECASE)
-
-def _extract_score_mentions_10(text: str) -> list[int]:
-    if not text:
-        return []
-    scores: list[int] = []
-    for m in _SCORE_10_RE.finditer(text):
-        val = m.group(1) or m.group(2)
-        if val is None:
-            continue
-        try:
-            scores.append(int(val))
-        except ValueError:
-            continue
-    return scores
-
-def _final_theory_summary_has_wrong_score(text: str, expected_points: int) -> bool:
-    mentions = _extract_score_mentions_10(text or "")
-    if not mentions:
-        return True
-    return any(x != expected_points for x in mentions)
-
-_ISSUE_BULLET_RE = re.compile(r"(?m)^\s*-\s+\*\*.+?\:\*\*")
-
-_THEORY_QUESTION_RE = re.compile(r"(?im)^\s*\*?\*?\s*вопрос\s+\d+\s*/\s*\d+")
-
-
-def _looks_like_theory_question_prompt(text: str) -> bool:
-    return _THEORY_QUESTION_RE.search(text or "") is not None
-
-def _final_theory_summary_too_generic(text: str, expected_question_count: int) -> bool:
-    normalized = (text or "").strip().lower()
-    if _looks_like_theory_question_prompt(text):
-        return True
-    if not normalized:
-        return True
-
-    required_sections = [
-        "итоги теоретической части",
-        "сильные стороны",
-        "зоны роста",
-        "итоговая оценка",
-    ]
-    if any(section not in normalized for section in required_sections):
-        return True
-
-    issue_blocks = _ISSUE_BULLET_RE.findall(text or "")
-    if expected_question_count > 0 and len(issue_blocks) < expected_question_count:
-        return True
-
-    if len(issue_blocks) < 2:
-        return True
-
-    return False
-
-def _build_final_theory_score_repair_message(expected_points: int, theory_max_points: int) -> str:
-    return (
-        "Предыдущий итоговый текст по теоретическому блоку получился слишком общим или нарушил структуру.\n"
-        "Нужно переписать его в следующем формате:\n"
-        "1) Заголовок 'Итоги теоретической части'.\n"
-        "2) 1-2 предложения общего вывода.\n"
-        "3) Отдельный список замечаний по каждому вопросу в формате '- **Тема:** замечание'.\n"
-        "4) Блок 'Сильные стороны'.\n"
-        "5) Блок 'Зоны роста'.\n"
-        "6) Строка с итоговой оценкой.\n"
-        "Не добавляй блок перехода к практической части: он будет показан отдельно системой.\n"
-        "В списке замечаний по вопросам запрещены промежуточные числовые оценки текстом.\n"
-        "Не используй метки вида 'Вопрос 1', 'Вопрос 2'. Используй краткие названия тем.\n"
-        "Используй финальный комментарий score_task как главный источник формулировок для замечаний.\n"
-        "Не сокращай конкретные замечания до общих слов.\n"
-        f"Используй ТОЧНО эту оценку: {expected_points}/{theory_max_points}.\n"
-        "После уже успешного финального theory score_task нельзя задавать новые вопросы кандидату.\n"
-        "Если предыдущий ответ был в форме 'Вопрос i/N: ...', полностью перепиши его в итоговый summary.\n"
-        "Не используй шаблон вида '1) Блок с оценкой / 2) Блок с комментарием / 3) Блок с зонами роста / Что дальше'.\n"
-        "Не добавляй JSON, словарь или tool payload с полями ok/task_id/points/comment.\n"
-        "Не вызывай tools."
-    )
 
 def _tools_for_current_task(current_task: dict | None, rag_available: bool):
     task_type = (current_task or {}).get("type")
@@ -353,7 +274,6 @@ def call_model(session_id: str, db: Session):
         except Exception:
             pass
 
-    # Fallback: если tool_calls нет, но модель напечатала tool-call текстом
     assistant_msg, tool_calls = _coerce_inline_tool_call(
         assistant_msg,
         allowed_tool_names=(
@@ -410,8 +330,11 @@ def call_model(session_id: str, db: Session):
 
     MAX_SCORE_RETRIES = 2
     retries_left = MAX_SCORE_RETRIES
+    max_tool_rounds = 8
+    tool_round = 0
 
-    while tool_calls:
+    while tool_calls and tool_round < max_tool_rounds:
+        tool_round += 1
         live_needs_intermediate_score, live_task_id, live_question_index = has_unscored_answer_for_current_theory_question(
             session,
             db,
@@ -568,7 +491,6 @@ def call_model(session_id: str, db: Session):
                     messages.append(retry_assistant_msg)
                     tool_calls = retry_tool_calls
 
-                    # важно — не идти дальше старым путём
                     score_task_failed = False
                     score_task_error_text = ""
 
@@ -730,7 +652,6 @@ def call_model(session_id: str, db: Session):
                         }
                     )
 
-            # tool result -> messages (как было)
             tool_messages.append(
                 {
                     "role": "tool",
@@ -750,10 +671,8 @@ def call_model(session_id: str, db: Session):
 
         if tool_calls is not None and not tool_messages and not score_task_failed:
             continue
-        # приклеиваем tool-ответы в историю
         messages.extend(tool_messages)
 
-        # Если score_task упал — заставляем модель повторить score_task корректно
         if score_task_failed and retries_left > 0:
             if tool_calls and not tool_messages and not score_task_failed:
                 continue
@@ -870,7 +789,6 @@ def call_model(session_id: str, db: Session):
             final_msg = retry_resp["choices"][0]["message"]
             tool_calls = final_msg.get("tool_calls")
 
-            # если она вместо tool_calls напечатала inline — используем твой механизм
             if not tool_calls:
                 content = final_msg.get("content") or ""
                 inline = _extract_inline_tool_call(content)
@@ -1011,7 +929,13 @@ def call_model(session_id: str, db: Session):
         if not tool_calls:
             break
 
-    # Если модель молчит после score_task, подставляем fallback feedback только для практики.
+    if tool_calls and tool_round >= max_tool_rounds:
+        final_msg = {
+            "role": "assistant",
+            "content": _human_tool_error(last_score_result or {}),
+        }
+        tool_calls = None
+
     if (not final_msg.get("content")) and last_score_result:
         task_id_scored = last_score_result.get("task_id") if isinstance(last_score_result, dict) else None
         task_obj_local = _get_task_by_id(session.scenario, task_id_scored) if task_id_scored else None
@@ -1078,8 +1002,6 @@ def call_model(session_id: str, db: Session):
                         final_text = repair_text
                 final_text = finalize_theory_final_message(final_text, theory_contract)
 
-    # Если модель после score_task напечатала raw tool-dump вместо нормального текста,
-    # не сохраняем этот мусор в чат.
     if _looks_like_tool_dump(final_text):
         final_text = _strip_trailing_tool_dump(final_text)
 
@@ -1094,8 +1016,6 @@ def call_model(session_id: str, db: Session):
         if _looks_like_tool_dump(final_text):
             final_text = ""
 
-    # Если это промежуточный theory score_task и модель не дала нормального текста,
-    # просим её ещё раз ответить БЕЗ tools обычным человеческим сообщением.
     if isinstance(last_score_result, dict) and last_score_result.get("ok") is True:
         if not final_text:
             task_id_scored = last_score_result.get("task_id")

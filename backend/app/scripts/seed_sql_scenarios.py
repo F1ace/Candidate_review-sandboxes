@@ -6,12 +6,10 @@ from sqlalchemy import create_engine, text
 
 
 def get_database_url() -> str:
-    # 1) обычный env
     db_url = os.getenv("DATABASE_URL")
     if db_url:
         return db_url
 
-    # 2) compose-style env pieces
     pg_user = os.getenv("POSTGRES_USER", "postgres")
     pg_password = os.getenv("POSTGRES_PASSWORD", "postgres")
     pg_host = os.getenv("POSTGRES_HOST", "localhost")

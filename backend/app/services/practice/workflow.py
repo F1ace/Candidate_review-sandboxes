@@ -480,8 +480,6 @@ class CodeWorkflowState:
             payload["task_id"] = payload.get("task_id") or task_id
 
         if name == "run_code":
-            # Для coding-проверки всегда используем исходный код кандидата из server-side context.
-            # Модель не должна передавать или переписывать code/task_id/language для sandbox.
             payload["task_id"] = task_id
             payload["language"] = "python"
             payload["code"] = candidate_code

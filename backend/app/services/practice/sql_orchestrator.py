@@ -645,7 +645,7 @@ def run_practice_sql_review(
 
                 try:
                     result = dispatch_tool_call(session, tc, db)
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     logger.exception("SQL tool failed: %s", name)
                     result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
@@ -826,7 +826,7 @@ def run_practice_sql_review(
 
                     try:
                         result = dispatch_tool_call(session, tc, db)
-                    except Exception as exc:  # noqa: BLE001
+                    except Exception as exc:
                         logger.exception("SQL tool failed during recovery: %s", name)
                         result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
@@ -908,7 +908,7 @@ def run_practice_sql_review(
                 }
                 try:
                     result = dispatch_tool_call(session, tc, db)
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     logger.exception("Model-generated SQL score_task failed after recovery: %s", exc)
                     result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
@@ -942,7 +942,7 @@ def run_practice_sql_review(
         if final_msg is None and state.is_complete():
             last_score_result = state.artifacts.get("score_result")
 
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.exception("Practice SQL review failed unexpectedly: %s", exc)
         reply = fallback_reply = (
             "Корректность: Не удалось получить финальный ответ модели.\n"

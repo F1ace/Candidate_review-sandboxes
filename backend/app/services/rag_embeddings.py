@@ -35,7 +35,7 @@ class LMStudioEmbeddingService:
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         try:
             return self._client.embed_documents(texts)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise EmbeddingServiceError(
                 "LM Studio embeddings request failed while indexing document chunks. "
                 f"Model={settings.lm_embedding_model!r}, base_url={settings.lm_studio_api_base!r}. "
@@ -45,7 +45,7 @@ class LMStudioEmbeddingService:
     def embed_query(self, text: str) -> list[float]:
         try:
             return self._client.embed_query(text)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise EmbeddingServiceError(
                 "LM Studio embeddings request failed while embedding the retrieval query. "
                 f"Model={settings.lm_embedding_model!r}, base_url={settings.lm_studio_api_base!r}. "

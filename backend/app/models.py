@@ -101,7 +101,7 @@ class Document(Base):
     status: Mapped[str] = mapped_column(String(32), default="ready", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     ingested_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
-    meta: Mapped[Optional[dict[str, Any]]] = mapped_column("metadata", JSON, default={})
+    meta: Mapped[Optional[dict[str, Any]]] = mapped_column("metadata", JSON, default=dict)
 
     corpus: Mapped["RagCorpus"] = relationship("RagCorpus", back_populates="documents")
     chunks: Mapped[list["DocumentChunk"]] = relationship(
@@ -128,7 +128,7 @@ class DocumentChunk(Base):
     char_start: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     char_end: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     embedding: Mapped[Optional[list[float]]] = mapped_column(VectorEmbedding())
-    meta: Mapped[Optional[dict[str, Any]]] = mapped_column("metadata", JSON, default={})
+    meta: Mapped[Optional[dict[str, Any]]] = mapped_column("metadata", JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
     document: Mapped["Document"] = relationship("Document", back_populates="chunks")
@@ -199,7 +199,7 @@ class Message(Base):
     __tablename__ = "messages"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"), nullable=False, index=True)
-    sender: Mapped[str] = mapped_column(String(50), nullable=False)  # candidate | model | system | tool
+    sender: Mapped[str] = mapped_column(String(50), nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     task_id: Mapped[Optional[str]] = mapped_column(String(128))
@@ -255,7 +255,7 @@ class Task(Base):
     scenario_id: Mapped[int] = mapped_column(ForeignKey("scenarios.id", ondelete="CASCADE"), nullable=False, index=True)
 
     external_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    task_type: Mapped[str] = mapped_column(String(50), nullable=False)   # theory | coding | sql
+    task_type: Mapped[str] = mapped_column(String(50), nullable=False)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     description_for_candidate: Mapped[Optional[str]] = mapped_column(Text)
     max_points: Mapped[int] = mapped_column(Integer, default=0, nullable=False)

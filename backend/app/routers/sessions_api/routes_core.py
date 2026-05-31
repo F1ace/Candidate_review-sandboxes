@@ -1,4 +1,4 @@
-﻿from datetime import datetime
+from datetime import datetime
 
 from fastapi import Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -62,10 +62,8 @@ def post_message(session_id: str, payload: schemas.MessageCreate, db: Session = 
         raise HTTPException(status_code=404, detail="Session not found")
     message = models.Message(session_id=session_id, **payload.model_dump())
     db.add(message)
-    # <-- ВАЖНО: если кандидат написал "Следующее", пробуем перевести задачу
     if payload.sender == "candidate":
         if advance_task_if_needed(session, payload.text):
-            # можно добавить системное сообщение для ясности
             db.add(models.Message(
                 session_id=session_id,
                 sender="system",
@@ -373,7 +371,6 @@ def practice_code(session_id: str, payload: PracticeCodeRequest, db: Session = D
     session.current_task_id = payload.task_id
     db.commit()
 
-    # Агентная проверка: модель сама вызывает tools по протоколу
     instruction = (
         f"Ты проверяешь coding-задачу {payload.task_id} ({task.get('title','')}).\n"
         "Кандидат уже написал код.\n"

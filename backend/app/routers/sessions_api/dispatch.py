@@ -111,7 +111,6 @@ def _hydrate_internal_final_theory_comments(
 def _build_tests_payload(task: models.Task) -> list[dict[str, Any]]:
     extra = task.extra_config or {}
 
-    # Фолбэк на старые/альтернативные ключи
     entrypoint_kind = (
         extra.get("entrypoint_kind")
         or extra.get("entrypointKind")
@@ -122,7 +121,6 @@ def _build_tests_payload(task: models.Task) -> list[dict[str, Any]]:
     )
     method_name = extra.get("method_name")
 
-    # Дополнительный фолбэк: если extra_config неполный, пробуем взять из JSON сценария
     scenario_task = None
     if getattr(task, "scenario", None) and getattr(task.scenario, "tasks", None):
         for item in task.scenario.tasks or []:
@@ -431,7 +429,7 @@ def _dispatch_tool_call(session: models.Session, tc: dict[str, Any], db: Session
 
         return {"ok": False, "error": f"Unknown tool: {name}"}
 
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
 def _validate_practice_comment(comment: str, task_type: str) -> str | None:
@@ -443,7 +441,6 @@ def _validate_practice_comment(comment: str, task_type: str) -> str | None:
             "Что можно улучшить:",
         ]
     else:
-        # coding остаётся как раньше
         required_headers = [
             "Корректность:",
             "Качество кода:",
@@ -677,9 +674,8 @@ def _theory_ready_for_scoring(session: models.Session, db: Session, task: dict) 
     n = len(questions)
 
     last_q_re = re.compile(
-        # Разрешаем: "**Вопрос 4/4:**", "Вопрос 4/4 (T-REST):", "- Вопрос 4/4 [любой текст]:"
         rf"^\s*[*_`\->#\s]*\s*вопрос\s*{n}\s*/\s*{n}"
-        rf"(?:\s*[\(\[].*?[\)\]])?"   # необязательная приписка в () или [] — например (T-REST)
+        rf"(?:\s*[\(\[].*?[\)\]])?"
         rf"\s*[:\-—]\s*",
         re.IGNORECASE,
     )
@@ -702,7 +698,6 @@ def _theory_ready_for_scoring(session: models.Session, db: Session, task: dict) 
     if last_q_idx is None:
         return False
 
-    # После последнего вопроса должен быть хотя бы один осмысленный ответ кандидата
     for m in history[last_q_idx + 1 :]:
         if m.sender == "candidate" and (m.text or "").strip():
             return True
@@ -904,8 +899,6 @@ def _compute_final_theory_points(
     normalized_avg = int(round(aggregated_avg))
     normalized_avg = max(1, min(max_points, normalized_avg))
 
-    # Финальный theory score не должен завышать уже рассчитанное среднее
-    # по промежуточным оценкам, но может быть ниже этого среднего.
     return float(min(normalized_requested, normalized_avg))
 
 def _aggregate_theory_intermediate_scores(session: models.Session, db: Session, task_id: str) -> dict[str, Any]:
@@ -986,15 +979,12 @@ def _apply_theory_penalties(
 
     penalty = 0
 
-    # Неполнота по нескольким вопросам — мягкий штраф
     if weak_count >= 2:
         penalty += 1
 
-    # Обычные ошибки не должны обрушать итог, если промежуточные баллы уже это учли
     if error_count >= 2:
         penalty += 1
 
-    # Критическая ошибка — ещё один штраф
     if critical_count >= 1:
         penalty += 1
 

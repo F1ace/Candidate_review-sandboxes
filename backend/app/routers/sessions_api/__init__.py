@@ -1,6 +1,7 @@
-﻿from .router import router
+from .router import router
 
-# Register route handlers on import.
-from . import routes_chat, routes_core, routes_report  # noqa: F401
+from . import routes_chat, routes_core, routes_report
+
+_route_modules = (routes_chat, routes_core, routes_report)
 
 __all__ = ["router"]

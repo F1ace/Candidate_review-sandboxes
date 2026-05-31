@@ -1,5 +1,4 @@
 ﻿import json
-import re
 from typing import Any
 
 from fastapi import HTTPException
@@ -27,7 +26,7 @@ from .prompting import (
     _strip_think,
 )
 from .router import logger
-from .state import (_control_state, _conversation_snapshot, _convert_history, _get_task_by_id, _theory_is_complete,)
+from .state import (_control_state, _conversation_snapshot, _convert_history, _get_task_by_id,)
 from .tool_call_utils import (
     attach_inline_tool_call as _attach_inline_tool_call,
     is_score_task_error as _is_score_task_error,
@@ -62,7 +61,6 @@ def _sanitize_streamed_text(
             return _human_tool_error(score_result_payload)
         return ""
 
-    # Дополнительная защита от LM Studio pseudo-tool-call текста
     if "<|channel|>" in text or "<|message|>" in text or "<|constrain|>" in text:
         if isinstance(score_result_payload, dict):
             if score_result_payload.get("ok") is True:
@@ -238,80 +236,6 @@ def _should_allow_final_theory_score_tool(
     aggregated = _aggregate_theory_intermediate_scores(session, db, task_id)
     missing_questions = aggregated.get("missing_questions") or []
     return len(missing_questions) == 0
-
-_SCORE_10_RE = re.compile(r"(\d+)\s*/\s*10|\b(\d+)\s+из\s+10\b", re.IGNORECASE)
-
-def _extract_score_mentions_10(text: str) -> list[int]:
-    if not text:
-        return []
-    scores: list[int] = []
-    for m in _SCORE_10_RE.finditer(text):
-        val = m.group(1) or m.group(2)
-        if val is None:
-            continue
-        try:
-            scores.append(int(val))
-        except ValueError:
-            continue
-    return scores
-
-def _final_theory_summary_has_wrong_score(text: str, expected_points: int) -> bool:
-    mentions = _extract_score_mentions_10(text or "")
-    if not mentions:
-        return True
-    return any(x != expected_points for x in mentions)
-
-_ISSUE_BULLET_RE = re.compile(r"(?m)^\s*-\s+\*\*.+?\:\*\*")
-
-_THEORY_QUESTION_RE = re.compile(r"(?im)^\s*\*?\*?\s*вопрос\s+\d+\s*/\s*\d+")
-
-
-def _looks_like_theory_question_prompt(text: str) -> bool:
-    return _THEORY_QUESTION_RE.search(text or "") is not None
-
-def _final_theory_summary_too_generic(text: str, expected_question_count: int) -> bool:
-    normalized = (text or "").strip().lower()
-    if _looks_like_theory_question_prompt(text):
-        return True
-    if not normalized:
-        return True
-
-    required_sections = [
-        "итоги теоретической части",
-        "сильные стороны",
-        "зоны роста",
-        "итоговая оценка",
-    ]
-    if any(section not in normalized for section in required_sections):
-        return True
-
-    issue_blocks = _ISSUE_BULLET_RE.findall(text or "")
-    if expected_question_count > 0 and len(issue_blocks) < expected_question_count:
-        return True
-
-    if len(issue_blocks) < 2:
-        return True
-
-    return False
-
-def _build_final_theory_score_repair_message(expected_points: int, theory_max_points: int) -> str:
-    return (
-        "Предыдущий итоговый текст по теоретическому блоку получился слишком общим или нарушил структуру.\n"
-        "Нужно переписать его в следующем формате:\n"
-        "1) Заголовок 'Итоги теоретической части'.\n"
-        "2) 1-2 предложения общего вывода.\n"
-        "3) Отдельный список замечаний по каждому вопросу в формате '- **Тема:** замечание'.\n"
-        "4) Блок 'Сильные стороны'.\n"
-        "5) Блок 'Зоны роста'.\n"
-        "6) Строка с итоговой оценкой.\n"
-        "Не добавляй блок перехода к практической части: он будет показан отдельно системой.\n"
-        "В списке замечаний по вопросам запрещены промежуточные числовые оценки текстом.\n"
-        "Не используй метки вида 'Вопрос 1', 'Вопрос 2'. Используй краткие названия тем.\n"
-        "Используй финальный комментарий score_task как главный источник формулировок для замечаний.\n"
-        "Не сокращай конкретные замечания до общих слов.\n"
-        f"Используй ТОЧНО эту оценку: {expected_points}/{theory_max_points}.\n"
-        "Не вызывай tools."
-    )
 
 def stream_model(session_id: str):
     base_db = SessionLocal()
@@ -709,7 +633,6 @@ def stream_model(session_id: str):
                         logger.exception("Retry tool failed: %s", fname)
                         retry_result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
-                    # заменяем исходный неуспешный результат результатом retry
                     result = retry_result
                     tc = retry_tc
 
@@ -1051,7 +974,6 @@ def stream_model(session_id: str):
             )
             control_state = _control_state(local_session, history_local)
 
-            # 1. Сохраняем tool-результаты в messages
             for payload in tool_results_payload:
                 local_db.add(models.Message(
                     session_id=session_id,
@@ -1060,7 +982,6 @@ def stream_model(session_id: str):
                     task_id=payload.get("task_id"),
                 ))
 
-            # 2. Берём уже готовый assistant message после tool-этапа
             raw_final_text = _strip_think((post_tools_assistant_msg or {}).get("content") or "").strip()
 
             task_type = None
@@ -1085,10 +1006,7 @@ def stream_model(session_id: str):
                         final_text = (_score_feedback(score_result_payload) or "").strip()
                 elif score_result_payload.get("ok") is not True:
                     final_text = (_human_tool_error(score_result_payload) or "").strip()
-                elif score_result_payload.get("ok") is not True:
-                    final_text = (_human_tool_error(score_result_payload) or "").strip()
 
-            # 5. Если после всего текста нет — не сохраняем пустое model-сообщение
             if not final_text and not control_state.get("intro_done", False):
                 final_text = _ensure_first_model_greeting("", local_session)
                 final_text = _ensure_first_model_opening(final_text, local_session)

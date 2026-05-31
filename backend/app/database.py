@@ -11,7 +11,6 @@ class Base(DeclarativeBase):
 
 
 def _engine_connect_args(database_url: str) -> dict[str, Any]:
-    # Keep legacy SQLite compatibility for local dev while PostgreSQL is default runtime.
     if database_url.startswith("sqlite"):
         return {"check_same_thread": False}
     return {}

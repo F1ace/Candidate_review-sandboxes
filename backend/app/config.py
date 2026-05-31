@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     rag_chunk_size: int = Field(default=900, env="RAG_CHUNK_SIZE")
     rag_chunk_overlap: int = Field(default=150, env="RAG_CHUNK_OVERLAP")
     rag_default_top_k: int = Field(default=5, env="RAG_DEFAULT_TOP_K")
-    allow_origins: str = Field(default="*")  # comma-separated origins
+    allow_origins: str = Field(default="*")
 
     @property
     def lm_studio_api_base(self) -> str:

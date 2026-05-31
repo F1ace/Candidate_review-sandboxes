@@ -1,10 +1,7 @@
-﻿from datetime import datetime
+from datetime import datetime
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field
-
-
-# ----- Role -----
 
 
 class RoleBase(BaseModel):
@@ -28,9 +25,6 @@ class RoleOut(RoleBase):
 
     class Config:
         from_attributes = True
-
-
-# ----- Scenario -----
 
 
 class ScenarioBase(BaseModel):
@@ -65,9 +59,6 @@ class ScenarioOut(ScenarioBase):
 
     class Config:
         from_attributes = True
-
-
-# ----- Rag corpus / documents -----
 
 
 class RagCorpusBase(BaseModel):
@@ -112,9 +103,6 @@ class DocumentOut(BaseModel):
         populate_by_name = True
 
 
-# ----- SQL Scenario -----
-
-
 class SqlScenarioBase(BaseModel):
     name: str
     description: Optional[str] = None
@@ -131,9 +119,6 @@ class SqlScenarioOut(SqlScenarioBase):
 
     class Config:
         from_attributes = True
-
-
-# ----- Session & chat -----
 
 
 class SessionCreate(BaseModel):
@@ -173,9 +158,6 @@ class MessageOut(BaseModel):
 
     class Config:
         from_attributes = True
-
-
-# ----- Scoring -----
 
 
 class ScoreCreate(BaseModel):
@@ -245,9 +227,6 @@ class InterviewReportOut(BaseModel):
     growth_areas: list[str] = Field(default_factory=list)
     sections: list[InterviewReportSectionOut] = Field(default_factory=list)
     task_breakdown: list[InterviewReportTaskOut] = Field(default_factory=list)
-
-
-# ----- Tools -----
 
 
 class RagSearchRequest(BaseModel):

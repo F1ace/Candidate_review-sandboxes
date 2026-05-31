@@ -39,7 +39,6 @@ def looks_like_tool_dump(text: str) -> bool:
 
     low = t.lower()
 
-    # старый score_task-формат
     if low.startswith("score_task"):
         return True
 
@@ -49,7 +48,6 @@ def looks_like_tool_dump(text: str) -> bool:
     if t.startswith("{") and t.endswith("}") and ("task_id" in low and "points" in low):
         return True
 
-    # общий raw tool-call / pseudo tool-call
     if "to=functions." in low:
         return True
     if "to=score_task" in low:
@@ -71,7 +69,6 @@ def looks_like_tool_dump(text: str) -> bool:
     if "<|message|>{" in low and "to=" in low:
         return True
 
-    # json-подобный tool payload
     if '"sql"' in low and '"task_id"' in low:
         return True
     if '"code"' in low and '"task_id"' in low:

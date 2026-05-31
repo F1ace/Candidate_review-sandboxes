@@ -342,8 +342,7 @@ const theoryCompleted = useMemo(() => {
   const canExportReport = Boolean(sessionId) && totalTasksCount > 0 && scoredTasksCount === totalTasksCount;
 
   const firstPracticeIndex = useMemo(() => {
-  // индекс первого задания НЕ theory (coding/sql)
-  return orderedTasks.findIndex((t) => t.type !== "theory");
+    return orderedTasks.findIndex((t) => t.type !== "theory");
   }, [orderedTasks]);
 
   const loadCorpusDocuments = async (corpusId: number): Promise<RagDocument[]> => {

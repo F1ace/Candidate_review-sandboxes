@@ -141,7 +141,7 @@ def run_sql(req: RunSqlRequest) -> RunSqlResponse:
         cols = [d[0] for d in cur.description]
         rows = [list(r) for r in cur.fetchall()]
         return RunSqlResponse(success=True, columns=cols, rows=rows)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return RunSqlResponse(success=False, error=str(exc))
     finally:
         try:

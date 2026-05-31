@@ -698,7 +698,6 @@ def run_practice_code_review(
     tool_results_for_ui: list[dict[str, Any]] = []
 
     final_msg: dict[str, Any] | None = None
-    backend_completed_pipeline = False
     backend_generated_reply = False
     pending_score_task_recovery_error: str | None = None
     last_score_feedback_draft: str | None = None
@@ -816,7 +815,7 @@ def run_practice_code_review(
 
                 try:
                     result = dispatch_tool_call(session, tc, db)
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     logger.exception("Tool failed: %s", name)
                     result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
@@ -913,7 +912,7 @@ def run_practice_code_review(
                 }
                 try:
                     result = dispatch_tool_call(session, tc, db)
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     logger.exception("Auto tool failed: %s", next_tool)
                     result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
@@ -930,9 +929,6 @@ def run_practice_code_review(
                 if not ok:
                     auto_error = reason or "unknown auto-step error"
                     break
-
-            if state.is_complete():
-                backend_completed_pipeline = True
 
             if not state.is_complete():
                 if not (
@@ -1044,7 +1040,7 @@ def run_practice_code_review(
 
                     try:
                         result = dispatch_tool_call(session, tc, db)
-                    except Exception as exc:  # noqa: BLE001
+                    except Exception as exc:
                         logger.exception("Tool failed: %s", name)
                         result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
@@ -1123,7 +1119,7 @@ def run_practice_code_review(
                 }
                 try:
                     result = dispatch_tool_call(session, tc, db)
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     logger.exception("Model-generated score_task failed after recovery: %s", exc)
                     result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
@@ -1191,7 +1187,7 @@ def run_practice_code_review(
                 "role": "assistant",
                 "content": pending_score_task_recovery_error,
             }
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.exception("Practice code review failed unexpectedly: %s", exc)
         content = _practice_recovery_reply(state)
         db.add(models.Message(session_id=session.id, sender="model", text=content, task_id=task_id))
@@ -1203,7 +1199,6 @@ def run_practice_code_review(
         }
 
     content = _normalize_model_practice_reply(((final_msg or {}).get("content") or "").strip())
-    score_result = state.artifacts.get("score_result") or {}
 
     if _practice_reply_needs_fallback(content):
         content = _practice_recovery_reply(state)

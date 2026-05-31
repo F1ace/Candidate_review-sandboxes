@@ -137,7 +137,6 @@ def _build_dynamic_growth_points(result: dict[str, Any]) -> list[str]:
             "Старайтесь структурировать ответ по схеме: определение → зачем метод нужен → как применяется на практике → ограничения и риски."
         )
 
-    # Убираем дубли
     unique_growth_points: list[str] = []
     seen = set()
     for item in growth_points:
@@ -149,7 +148,6 @@ def _build_dynamic_growth_points(result: dict[str, Any]) -> list[str]:
     if unique_growth_points:
         return unique_growth_points[:3]
 
-    # Фолбэк: пытаемся извлечь хвосты после маркеров из comments
     extracted: list[str] = []
     patterns = [
         r"(?:можно было бы добавить[^.?!]*[.?!])",
@@ -166,7 +164,6 @@ def _build_dynamic_growth_points(result: dict[str, Any]) -> list[str]:
                 if cleaned:
                     extracted.append(cleaned)
 
-    # Убираем дубли
     unique_extracted: list[str] = []
     seen = set()
     for item in extracted:
@@ -192,12 +189,6 @@ def _score_feedback(result: dict[str, Any], theory_max_points: int = 10):
     comment = (result.get("comment") or "").strip()
     aggregated = result.get("aggregated") or {}
     aggregated_comments = aggregated.get("comments") or []
-    points = result.get("points")
-    aggregated = result.get("aggregated") or {}
-    if aggregated.get("avg_points") is not None:
-        points = aggregated.get("avg_points")
-
-    comment = (result.get("comment") or "").strip()
 
     if not isinstance(aggregated_comments, list):
         aggregated_comments = []
@@ -218,9 +209,6 @@ def _score_feedback(result: dict[str, Any], theory_max_points: int = 10):
 
     if is_final and aggregated_comments:
         comment = ""
-
-    raw_is_final = result.get("is_final", True)
-    is_final = raw_is_final if isinstance(raw_is_final, bool) else str(raw_is_final).lower() == "true"
 
     if not is_final:
         return ""

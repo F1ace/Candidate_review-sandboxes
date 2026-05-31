@@ -63,7 +63,6 @@ def _normalize_value(value: Any):
         return asdict(value)
 
     if isinstance(value, tuple):
-        # Приводим tuple к list, потому что через JSON tuple всё равно приезжает как array/list
         return [_normalize_value(v) for v in value]
 
     if isinstance(value, list):
@@ -79,18 +78,14 @@ def _values_equal(actual: Any, expected: Any, *, float_tol: float = 1e-6) -> boo
     actual = _normalize_value(actual)
     expected = _normalize_value(expected)
 
-    # float ~= float
     if isinstance(actual, (int, float)) and isinstance(expected, (int, float)):
         return isclose(float(actual), float(expected), rel_tol=float_tol, abs_tol=float_tol)
 
-    # list vs list
     if isinstance(actual, list) and isinstance(expected, list):
         if len(actual) != len(expected):
             return False
         return all(_values_equal(a, e, float_tol=float_tol) for a, e in zip(actual, expected))
 
-    # dict subset semantics:
-    # expected может содержать только те поля, которые мы хотим проверить
     if isinstance(actual, dict) and isinstance(expected, dict):
         for key, expected_value in expected.items():
             if key not in actual:
